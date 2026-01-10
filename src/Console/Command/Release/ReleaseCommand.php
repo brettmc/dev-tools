@@ -41,7 +41,7 @@ class ReleaseCommand extends AbstractReleaseCommand
         ;
     }
     #[\Override]
-    protected function interact(InputInterface $input, OutputInterface $output)
+    protected function interact(InputInterface $input, OutputInterface $output): void
     {
         if (!$input->getOption('token')) {
             $token = getenv('GITHUB_TOKEN');
