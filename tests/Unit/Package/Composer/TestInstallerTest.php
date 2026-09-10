@@ -11,6 +11,7 @@ use OpenTelemetry\DevTools\Package\Composer\ValueObject\SingleRepositoryInterfac
 use OpenTelemetry\DevTools\Util\RecursiveDirectoryRemover;
 use org\bovigo\vfs\vfsStream;
 use org\bovigo\vfs\vfsStreamDirectory;
+use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -24,7 +25,7 @@ class TestInstallerTest extends TestCase
     public const COMPOSER_FILE_NAME = 'composer.json';
 
     private TestInstaller $instance;
-    private RecursiveDirectoryRemover $directoryRemover;
+    private RecursiveDirectoryRemover&MockObject $directoryRemover;
     private vfsStreamDirectory $root;
 
     #[\Override]
@@ -46,9 +47,6 @@ class TestInstallerTest extends TestCase
         TestInstaller::setDirectoryRemover(null);
     }
 
-    /**
-     * @psalm-suppress UndefinedMethod
-     */
     public function test_install(): void
     {
         $composerDirectory = self::TEST_DIR;
@@ -56,7 +54,6 @@ class TestInstallerTest extends TestCase
             ->at($this->root)
             ->url();
 
-        /** @phpstan-ignore-next-line */
         $this->directoryRemover->method('remove')
             ->willReturnCallback(function () use ($testDirectory) {
                 rmdir($testDirectory);
@@ -92,9 +89,6 @@ class TestInstallerTest extends TestCase
         );
     }
 
-    /**
-     * @psalm-suppress UndefinedMethod
-     */
     public function test_install_throws_exception_when_not_able_to_create_install_directory(): void
     {
         $this->expectException(InvalidArgumentException::class);
@@ -104,7 +98,6 @@ class TestInstallerTest extends TestCase
         $this->root->chown(12345);
         $this->root->chmod(0700);
 
-        /** @phpstan-ignore-next-line */
         $this->directoryRemover->method('remove')
             ->willReturn(true);
 
@@ -136,9 +129,6 @@ class TestInstallerTest extends TestCase
         );
     }
 
-    /**
-     * @psalm-suppress UndefinedMethod
-     */
     public function test_remove_throws_exception_on_error(): void
     {
         $exception = new RuntimeException();
@@ -147,7 +137,6 @@ class TestInstallerTest extends TestCase
 
         $installation = $this->createMock(TestInstallation::class);
 
-        /** @phpstan-ignore-next-line */
         $this->directoryRemover->method('remove')
             ->willThrowException($exception);
 

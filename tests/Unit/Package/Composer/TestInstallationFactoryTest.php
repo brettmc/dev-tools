@@ -10,6 +10,7 @@ use OpenTelemetry\DevTools\Package\Composer\TestConfigFactory;
 use OpenTelemetry\DevTools\Package\Composer\TestInstallationFactory;
 use OpenTelemetry\DevTools\Package\Composer\ValueObject\RepositoryCollection;
 use OpenTelemetry\DevTools\Package\Composer\ValueObject\SingleRepositoryInterface;
+use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -21,7 +22,7 @@ class TestInstallationFactoryTest extends TestCase
     private const TESTED_BRANCH_VERSION = 'dev-' . self::TESTED_BRANCH;
 
     private TestInstallationFactory $instance;
-    private TestConfigFactory $testConfigFactory;
+    private TestConfigFactory&MockObject $testConfigFactory;
 
     #[\Override]
     protected function setUp(): void
@@ -33,13 +34,9 @@ class TestInstallationFactoryTest extends TestCase
         );
     }
 
-    /**
-     * @psalm-suppress UndefinedMethod
-     */
     public function test_build(): void
     {
         $config = $this->createMock(TestConfig::class);
-        /** @phpstan-ignore-next-line */
         $this->testConfigFactory
             ->method('build')
             ->willReturn($config);
@@ -85,12 +82,8 @@ class TestInstallationFactoryTest extends TestCase
         );
     }
 
-    /**
-     * @psalm-suppress UndefinedMethod
-     */
     public function test_add_default_dependency(): void
     {
-        /** @phpstan-ignore-next-line */
         $this->testConfigFactory
             ->expects($this->once())
             ->method('addDefaultDependency');

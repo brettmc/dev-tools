@@ -92,7 +92,8 @@ abstract class AbstractReleaseCommand extends BaseCommand
         $data = json_decode($response->getBody()->getContents());
 
         $release = new Release();
-        $release->timestamp = $data->published_at;
+        //created_at is when the tag was created, which may be well before the release was published
+        $release->timestamp = $data->created_at;
         $release->version = $data->tag_name;
         $this->output->isVerbose() && $this->output->writeln("[INFO] Latest release of {$repository->downstream} is {$release}");
 
@@ -102,11 +103,25 @@ abstract class AbstractReleaseCommand extends BaseCommand
     protected function get_downstream_unreleased_commits(Repository $repository): array
     {
         $commits_url = "https://api.github.com/repos/{$repository->downstream}/commits";
-        if ($repository->latestRelease !== null) {
-            $commits_url .= "?since={$repository->latestRelease->timestamp}";
+        $latestRelease = $repository->latestRelease;
+        if ($latestRelease !== null) {
+            $commits_url .= '?since=' . $this->since($latestRelease);
         }
 
         return $this->get_commits($commits_url, $repository);
+    }
+
+    /**
+     * Github's `since` filter is inclusive, so advance one second past the tag to avoid listing the
+     * already-released commit. This happens with lightweight tags, where the tag's timestamp is the
+     * timestamp of the commit it points at.
+     */
+    private function since(Release $release): string
+    {
+        return (new \DateTimeImmutable($release->timestamp))
+            ->setTimezone(new \DateTimeZone('UTC'))
+            ->modify('+1 second')
+            ->format('Y-m-d\TH:i:s\Z');
     }
 
     /**
@@ -116,8 +131,9 @@ abstract class AbstractReleaseCommand extends BaseCommand
     protected function get_upstream_unreleased_commits(Repository $repository): array
     {
         $commits_url = "https://api.github.com/repos/{$repository->upstream}/commits?path={$repository->upstream->path}";
-        if ($repository->latestRelease !== null) {
-            $commits_url .= "&since={$repository->latestRelease->timestamp}";
+        $latestRelease = $repository->latestRelease;
+        if ($latestRelease !== null) {
+            $commits_url .= '&since=' . $this->since($latestRelease);
         }
 
         return $this->get_commits($commits_url, $repository);

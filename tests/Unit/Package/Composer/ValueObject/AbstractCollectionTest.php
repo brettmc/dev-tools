@@ -43,7 +43,7 @@ class AbstractCollectionTest extends TestCase
         $this->instance[self::OFFSET_KEY] = $this->createMock(ValueObjectInterface::class);
 
         $this->assertTrue(
-            isset($this->instance[self::OFFSET_KEY])
+            $this->instance->offsetExists(self::OFFSET_KEY)
         );
     }
 
