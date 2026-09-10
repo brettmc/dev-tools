@@ -103,8 +103,9 @@ abstract class AbstractReleaseCommand extends BaseCommand
     protected function get_downstream_unreleased_commits(Repository $repository): array
     {
         $commits_url = "https://api.github.com/repos/{$repository->downstream}/commits";
-        if ($repository->latestRelease !== null) {
-            $commits_url .= '?since=' . $this->since($repository->latestRelease);
+        $latestRelease = $repository->latestRelease;
+        if ($latestRelease !== null) {
+            $commits_url .= '?since=' . $this->since($latestRelease);
         }
 
         return $this->get_commits($commits_url, $repository);
@@ -130,8 +131,9 @@ abstract class AbstractReleaseCommand extends BaseCommand
     protected function get_upstream_unreleased_commits(Repository $repository): array
     {
         $commits_url = "https://api.github.com/repos/{$repository->upstream}/commits?path={$repository->upstream->path}";
-        if ($repository->latestRelease !== null) {
-            $commits_url .= '&since=' . $this->since($repository->latestRelease);
+        $latestRelease = $repository->latestRelease;
+        if ($latestRelease !== null) {
+            $commits_url .= '&since=' . $this->since($latestRelease);
         }
 
         return $this->get_commits($commits_url, $repository);

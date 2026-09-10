@@ -8,7 +8,7 @@ class Repository
 {
     public Project $upstream; //the monorepo that this repo is split from
     public Project $downstream; //the read-only downstream repo (split target)
-    public ?Release $latestRelease; //latest release
+    public ?Release $latestRelease = null; //latest release
     /**
      * @var array<Commit>
      */
