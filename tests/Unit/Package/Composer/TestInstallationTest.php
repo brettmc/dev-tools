@@ -14,6 +14,7 @@ use OpenTelemetry\DevTools\Package\Composer\ValueObject\RepositoryCollection;
 use OpenTelemetry\DevTools\Package\Composer\ValueObject\SingleRepositoryInterface;
 use org\bovigo\vfs\vfsStream;
 use org\bovigo\vfs\vfsStreamDirectory;
+use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -35,9 +36,9 @@ class TestInstallationTest extends TestCase
     ];
 
     private TestInstallation $instance;
-    private SingleRepositoryInterface $repository;
-    private TestConfig $config;
-    private RepositoryCollection $dependencies;
+    private SingleRepositoryInterface&MockObject $repository;
+    private TestConfig&MockObject $config;
+    private RepositoryCollection&MockObject $dependencies;
     private vfsStreamDirectory $root;
     private string $testDirectory;
 
@@ -106,11 +107,9 @@ class TestInstallationTest extends TestCase
 
     /**
      * @throws JsonException
-     * @psalm-suppress UndefinedMethod
      */
     public function test_to_json(): void
     {
-        /** @phpstan-ignore-next-line */
         $this->config
             ->method('toArray')
             ->willReturn(self::TEST_CONFIG);
@@ -121,12 +120,8 @@ class TestInstallationTest extends TestCase
         );
     }
 
-    /**
-     * @psalm-suppress UndefinedMethod
-     */
     public function test_to_json_throws_exception_on_invalid_json(): void
     {
-        /** @phpstan-ignore-next-line */
         $this->config
             ->method('toArray')
             ->willThrowException(
@@ -140,11 +135,9 @@ class TestInstallationTest extends TestCase
 
     /**
      * @throws JsonException
-     * @psalm-suppress UndefinedMethod
      */
     public function test_to_string(): void
     {
-        /** @phpstan-ignore-next-line */
         $this->config
             ->method('toArray')
             ->willReturn(self::TEST_CONFIG);
@@ -155,18 +148,13 @@ class TestInstallationTest extends TestCase
         );
     }
 
-    /**
-     * @psalm-suppress UndefinedMethod
-     */
     public function test_write_composer_file(): void
     {
         $composerPath = $this->testDirectory . DIRECTORY_SEPARATOR . TestInstallation::COMPOSER_FILE_NAME;
-        /** @phpstan-ignore-next-line */
         $this->repository
             ->method('getComposerFilePath')
             ->willReturn($composerPath);
 
-        /** @phpstan-ignore-next-line */
         $this->config
             ->method('toArray')
             ->willReturn(self::TEST_CONFIG);
@@ -181,19 +169,14 @@ class TestInstallationTest extends TestCase
         );
     }
 
-    /**
-     * @psalm-suppress UndefinedMethod
-     */
     public function test_write_composer_file_throws_exception_on_file_write_error(): void
     {
         $composerPath = $this->testDirectory . DIRECTORY_SEPARATOR . TestInstallation::COMPOSER_FILE_NAME;
-        /** @phpstan-ignore-next-line */
         $this->repository->method('getComposerFilePath')
             ->willReturn('foo://bar.baz');
 
         $this->expectException(RuntimeException::class);
 
-        /** @phpstan-ignore-next-line */
         $this->config
             ->method('toArray')
             ->willReturn(self::TEST_CONFIG);
