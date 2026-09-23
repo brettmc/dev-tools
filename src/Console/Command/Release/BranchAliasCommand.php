@@ -11,10 +11,11 @@ use OpenTelemetry\DevTools\Package\Composer\BranchAliasUpdater;
 use OpenTelemetry\DevTools\Package\Composer\ConfigAttributes;
 use OpenTelemetry\DevTools\Package\Composer\PackageAttributeResolver;
 use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
+use Symfony\Component\Console\Output\ConsoleSectionOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Yaml\Parser;
 
@@ -80,25 +81,48 @@ class BranchAliasCommand extends AbstractReleaseCommand
         }
 
         $branchKey = "dev-{$this->branch}";
+
+        //the table grows a row per package as it is resolved, which is the progress report. Logging
+        //goes to a section above it so that the two cannot redraw over each other.
+        $logSection = $this->redrawable_section($output);
+        $tableSection = $this->redrawable_section($output);
+        if ($logSection !== null) {
+            $this->registerOutput($logSection);
+        }
+        $reportSection = $tableSection ?? $this->output;
+
         $this->output->writeln(sprintf('<info>Updating %s aliases in %s</info>', $branchKey, $path));
 
-        $table = new Table($this->output);
+        $table = new Table($reportSection);
         $table->setHeaders(['Package', 'Latest release', 'Current alias', 'New alias', 'Action']);
-        $bar = new ProgressBar($this->output, count($found));
-        $bar->start();
         foreach ($found as $repository) {
             $repository->latestRelease = $this->get_latest_release($repository);
-            $bar->advance();
-            $table->addRow($this->handle_repository($repository, $path, $branchKey));
+            $row = $this->handle_repository($repository, $path, $branchKey);
+            //appendRow redraws the table in place; without a section it can only be rendered once
+            $tableSection === null ? $table->addRow($row) : $table->appendRow($row);
         }
-        $bar->finish();
-        $this->output->writeln('');
-        $table->render();
-        $this->output->writeln($this->dry_run
+        if ($tableSection === null) {
+            $table->render();
+        }
+        $reportSection->writeln($this->dry_run
             ? '<comment>[DRY-RUN] no files were changed</comment>'
             : '<info>Review the changes with `git diff`, then commit them and open a pull request.</info>');
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * A region of the terminal that can be redrawn independently of the rest, or null when $output
+     * cannot support one: a non-console output (eg a CommandTester stream), or an undecorated one,
+     * where clearing is a no-op and an in-place redraw would append a whole extra copy instead.
+     *
+     * Sections are stacked in creation order, so the order they are requested is the layout.
+     */
+    private function redrawable_section(OutputInterface $output): ?ConsoleSectionOutput
+    {
+        return $output instanceof ConsoleOutputInterface && $output->isDecorated()
+            ? $output->section()
+            : null;
     }
 
     /**
