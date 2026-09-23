@@ -25,6 +25,10 @@ class ReleaseCommand extends AbstractReleaseCommand
     private string $source_branch;
     private bool $dry_run;
     private bool $force;
+    /**
+     * @var array<string> packages released by this run
+     */
+    private array $released = [];
 
     #[\Override]
     protected function configure(): void
@@ -104,6 +108,7 @@ class ReleaseCommand extends AbstractReleaseCommand
         }
         $bar->finish();
         $this->publish_repositories($repositories);
+        $this->remind_about_branch_aliases();
 
         return Command::SUCCESS;
     }
@@ -279,7 +284,22 @@ class ReleaseCommand extends AbstractReleaseCommand
             $this->output->writeln("<error>[ERROR] ({$response->getStatusCode()}) {$response->getBody()->getContents()}</error>");
         } else {
             $json = json_decode($response->getBody()->getContents());
+            $this->released[] = $repository->downstream->project;
             $this->output->writeln("<info>[CREATED] {$repository->downstream} {$release->version}: </info> {$json->html_url}");
         }
+    }
+
+    /**
+     * A release makes the branch alias of that package stale: composer ignores `extra.branch-alias`
+     * in a tag, so the alias is updated after tagging rather than before it.
+     */
+    private function remind_about_branch_aliases(): void
+    {
+        if ($this->released === []) {
+            return;
+        }
+        $packages = implode(', ', $this->released);
+        $this->output->writeln("<comment>Branch aliases may now be out of date for: {$packages}</comment>");
+        $this->output->writeln('<comment>Run `vendor/bin/otel update:branch-alias` from the monorepo checkout, and open a pull request with the changes.</comment>');
     }
 }

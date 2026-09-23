@@ -57,6 +57,57 @@ Once all the info has been gathered, it will iterate over each repo with unrelea
 * generate release notes
 * create the release (unless `--dry-run` was specified)
 
+## Branch aliases
+
+Each package in a monorepo declares a [composer branch alias](https://getcomposer.org/doc/articles/aliases.md)
+in its own `composer.json`, which tells composer what version line the development branch belongs to:
+
+```json
+{
+    "extra": {
+        "branch-alias": {
+            "dev-main": "1.10.x-dev"
+        }
+    }
+}
+```
+
+These aliases go stale as packages are released. Composer only applies a branch alias to a dev branch (a
+tagged release takes its version from the tag, and the alias committed in that tag is ignored), so the
+alias is updated **after** tagging, not before it. `release:run` will remind you when a release makes one
+stale.
+
+`dev-tools` is a dev dependency of both monorepos, so run the command from a monorepo checkout. It takes
+the packages to update from that checkout's own `.gitsplit.yml`, so it only ever touches the monorepo you
+are standing in:
+
+```shell
+cd opentelemetry-php
+vendor/bin/otel update:branch-alias [--dry-run] [-v]
+```
+
+Options:
+- `-v[vv]` - verbosity
+- `--path=` - path to a monorepo checkout (default: working directory)
+- `--token=` - github token (can also be passed by `GITHUB_TOKEN`)
+- `--branch=` - branch the alias applies to (default: `main`, ie the `dev-main` alias)
+- `--filter=` - filter packages by prefix
+- `--dry-run` - report what would change, without writing anything
+
+For each package of the monorepo it will:
+* find the latest release of the split (downstream) repository
+* work out the alias for that version, eg `1.10.0` becomes `1.10.x-dev`
+* rewrite that one value in the package's `composer.json`, leaving the rest of the file untouched
+
+The following are reported but never modified:
+* a package that does not declare a `branch-alias` at all (most of the contrib packages)
+* a package whose alias is ahead of its releases, eg an alias of `1.0.x-dev` where the latest release is
+  `0.0.5`: that alias is aspirational rather than stale, and lowering it would break constraints that
+  currently resolve against the branch
+* a package whose alias cannot be safely identified in the raw file
+
+Then review the changes with `git diff`, and open a pull request against the monorepo.
+
 ## PECL release tool
 
 ### Generate updated `package.xml`

@@ -229,17 +229,30 @@ abstract class AbstractReleaseCommand extends BaseCommand
         }
 
         $yaml = $this->parser->parse($response->getBody()->getContents());
-        $repositories = [];
         $this->output->isVeryVerbose() && $this->output->writeln('[RESPONSE]' . json_encode($yaml['splits']));
-        foreach ($yaml['splits'] as $entry) {
+
+        return $this->map_gitsplit_repositories($yaml['splits'], $repo, $filter);
+    }
+
+    /**
+     * Map the `splits` of a .gitsplit.yml onto repositories, where $upstream is the monorepo that
+     * those splits are made from.
+     *
+     * @param array<array{prefix: string, target: string}> $splits
+     * @return array<Repository>
+     */
+    protected function map_gitsplit_repositories(array $splits, string $upstream, ?string $filter): array
+    {
+        $repositories = [];
+        foreach ($splits as $entry) {
             $prefix = $entry['prefix'];
-            if ($filter && !stripos($prefix, $filter) !== false) {
+            if ($filter && stripos($prefix, $filter) === false) {
                 $this->output->isVerbose() && $this->output->writeln(sprintf('[SKIP] %s does not match filter: %s', $prefix, $filter));
 
                 continue;
             }
             $repository = new Repository();
-            $repository->upstream = new Project($repo);
+            $repository->upstream = new Project($upstream);
             $repository->upstream->path = $prefix;
             $target = $entry['target'];
             $repository->downstream = new Project(str_replace(['https://${GH_TOKEN}@github.com/', '.git'], ['',''], $target));

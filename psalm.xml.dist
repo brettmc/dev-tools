@@ -70,16 +70,6 @@
                 <directory name="src"/>
             </errorLevel>
         </PossiblyNullReference>
-        <PossiblyInvalidArgument>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyInvalidArgument>
-        <PossiblyInvalidCast>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyInvalidCast>
         <ArgumentTypeCoercion>
             <errorLevel type="suppress">
                 <directory name="src"/>

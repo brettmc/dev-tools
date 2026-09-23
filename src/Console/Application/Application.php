@@ -6,6 +6,7 @@ namespace OpenTelemetry\DevTools\Console\Application;
 
 use OpenTelemetry\DevTools\Console\Command\Packages\ValidateInstallationCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\ValidatePackagesCommand;
+use OpenTelemetry\DevTools\Console\Command\Release\BranchAliasCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\PeclCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\PeclTagCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseCommand;
@@ -42,6 +43,7 @@ class Application extends BaseApplication
             new ReleaseListCommand(),
             new PeclCommand(),
             new PeclTagCommand(),
+            new BranchAliasCommand(),
         ]);
     }
 }
