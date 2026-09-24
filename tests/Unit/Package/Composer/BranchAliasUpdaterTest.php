@@ -9,6 +9,7 @@ use OpenTelemetry\DevTools\Package\Composer\BranchAliasStatus;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasUpdater;
 use OpenTelemetry\DevTools\Tests\Unit\Behavior\UsesVfsConstants;
 use OpenTelemetry\DevTools\Tests\Unit\Behavior\UsesVfsTrait;
+use org\bovigo\vfs\Quota;
 use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 
@@ -173,6 +174,39 @@ class BranchAliasUpdaterTest extends TestCase
         $this->assertSame(BranchAliasStatus::Ambiguous, $update->status);
         $this->assertSame('1.8.x-dev', $update->current);
         $this->assertSame($config, file_get_contents($path));
+    }
+
+    public function test_update_reports_write_failed_for_a_read_only_file(): void
+    {
+        $path = $this->createConfigFile(self::CONFIG);
+        $this->root->getChild(self::COMPOSER_FILE_NAME)->chmod(0o444);
+
+        $update = $this->updater->update($path, self::BRANCH_KEY, '1.10.x-dev');
+
+        $this->assertSame(BranchAliasStatus::WriteFailed, $update->status);
+        $this->assertSame('1.8.x-dev', $update->current);
+        $this->assertSame(self::CONFIG, file_get_contents($path));
+    }
+
+    /**
+     * A full disk, where the write is accepted but truncated: the damage is real, so it must not be
+     * reported as an update.
+     */
+    public function test_update_reports_write_failed_for_a_partial_write(): void
+    {
+        $path = $this->createConfigFile(self::CONFIG);
+        vfsStream::setQuota(strlen(self::CONFIG) - 20);
+
+        $update = $this->updater->update($path, self::BRANCH_KEY, '1.10.x-dev');
+
+        $this->assertSame(BranchAliasStatus::WriteFailed, $update->status);
+        $this->assertNotSame(self::CONFIG, file_get_contents($path));
+    }
+
+    #[\Override]
+    public function tearDown(): void
+    {
+        vfsStream::setQuota(Quota::UNLIMITED);
     }
 
     private function createConfigFile(string $content): string

@@ -72,7 +72,14 @@ class BranchAliasUpdater
             return new BranchAliasUpdate(BranchAliasStatus::Ambiguous, $current);
         }
         if (!$dryRun) {
-            file_put_contents($composerFilePath, $updated);
+            //a short count means a partial write (a full disk), and false an outright failure (a
+            //read-only file): either way the alias is not what we just reported, and in the partial
+            //case the file has been damaged, so the caller has to hear about it. The warning is
+            //suppressed because the return value is handled here.
+            $written = @file_put_contents($composerFilePath, $updated);
+            if ($written !== strlen($updated)) {
+                return new BranchAliasUpdate(BranchAliasStatus::WriteFailed, $current);
+            }
         }
 
         return new BranchAliasUpdate(BranchAliasStatus::Updated, $current);

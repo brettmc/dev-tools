@@ -12,6 +12,7 @@ enum BranchAliasStatus
     case Missing;
     case NotFound;
     case Ambiguous;
+    case WriteFailed;
 
     public function description(): string
     {
@@ -22,6 +23,7 @@ enum BranchAliasStatus
             self::Missing => 'no branch-alias',
             self::NotFound => 'no composer.json',
             self::Ambiguous => 'ambiguous, update manually',
+            self::WriteFailed => 'WRITE FAILED, check the file',
         };
     }
 }
