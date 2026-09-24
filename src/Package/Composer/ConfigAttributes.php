@@ -17,4 +17,6 @@ interface ConfigAttributes
     public const REPOSITORIES = 'repositories';
     public const PSR4 = 'psr-4';
     public const URL = 'url';
+    public const EXTRA = 'extra';
+    public const BRANCH_ALIAS = 'branch-alias';
 }
