@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
+use Composer\Semver\VersionParser;
 use Http\Discovery\Psr18ClientDiscovery;
 use InvalidArgumentException;
 use OpenTelemetry\DevTools\Console\Release\PrepEntry;
-use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogParser;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogRewriter;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogSection;
@@ -38,6 +38,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     private VersionSuggester $suggester;
     private VersionSourceResolver $versionSources;
     private ReleaseOrderChecker $orderChecker;
+    private VersionParser $versionParser;
     private int $failures = 0;
 
     public function __construct(?ClientInterface $client = null)
@@ -51,6 +52,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $this->suggester = new VersionSuggester();
         $this->versionSources = new VersionSourceResolver();
         $this->orderChecker = new ReleaseOrderChecker();
+        $this->versionParser = new VersionParser();
     }
 
     #[\Override]
@@ -122,32 +124,34 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
             return Command::FAILURE;
         }
-        $unknown = array_diff(array_keys($overrides), $this->known_names($found, $path));
+        $entries = [];
+        foreach ($found as $repository) {
+            $entry = new PrepEntry($repository);
+            $this->read_composer($entry, $path);
+            $entries[] = $entry;
+        }
+        $unknown = array_diff(array_keys($overrides), $this->known_names($entries));
         if ($unknown !== []) {
             $output->writeln(sprintf('<error>--set names no package of this checkout: %s</error>', implode(', ', $unknown)));
 
             return Command::FAILURE;
         }
-
-        $entries = [];
-        foreach ($found as $repository) {
-            $entry = new PrepEntry($repository);
+        foreach ($entries as $entry) {
             $this->assess($entry, $path, $overrides);
-            $entries[] = $entry;
         }
 
         $this->report($entries, $markdown);
 
         foreach ($entries as $entry) {
-            if (!$dryRun && !$entry->forced && $entry->file !== null && $entry->changes !== null) {
+            if (!$dryRun && !$entry->forced) {
                 $entry->version = $this->choose($entry);
             }
         }
-        $this->report_order($entries, $path);
+        $this->report_order($entries);
 
         $written = [];
         foreach ($entries as $entry) {
-            if ($entry->file === null || $entry->changes === null || $entry->version === null || $dryRun) {
+            if ($entry->version === null || $dryRun) {
                 continue;
             }
             if ($this->write($entry, $date)) {
@@ -196,40 +200,32 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     }
 
     /**
-     * @param array<Repository> $found
+     * @param array<PrepEntry> $entries
      * @return array<string>
      */
-    private function known_names(array $found, string $path): array
+    private function known_names(array $entries): array
     {
         $names = [];
-        foreach ($found as $repository) {
-            $names[] = $repository->downstream->project;
-            $names[] = $this->composer_name($repository, $path);
+        foreach ($entries as $entry) {
+            $names[] = $entry->repository->downstream->project;
+            $names[] = $entry->package;
         }
 
         return $names;
     }
 
     /**
-     * The package name from the composer.json of the split, which is not always derivable from the
-     * name of the repository it is split to. Falls back to that guess when there is no composer.json.
+     * Fill in the package name and composer.json of the split. The name is not always derivable from
+     * the name of the repository it is split to, so it falls back to that guess only when there is no
+     * composer.json.
      */
-    private function composer_name(Repository $repository, string $path): string
+    private function read_composer(PrepEntry $entry, string $path): void
     {
-        $name = $this->composer_data($repository, $path)['name'] ?? null;
-
-        return is_string($name) ? $name : "open-telemetry/{$repository->downstream->project}";
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function composer_data(Repository $repository, string $path): array
-    {
-        $file = $this->contained_file($path, $repository->upstream->path, self::COMPOSER_FILE);
+        $file = $this->contained_file($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
         $json = $file !== null && is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
-
-        return is_array($json) ? $json : [];
+        $entry->composer = is_array($json) ? $json : [];
+        $name = $entry->composer['name'] ?? null;
+        $entry->package = is_string($name) ? $name : "open-telemetry/{$entry->repository->downstream->project}";
     }
 
     /**
@@ -238,18 +234,16 @@ class ReleasePrepCommand extends AbstractReleaseCommand
      *
      * @param array<PrepEntry> $entries
      */
-    private function report_order(array $entries, string $path): void
+    private function report_order(array $entries): void
     {
         $packages = [];
         foreach ($entries as $entry) {
-            $data = $this->composer_data($entry->repository, $path);
-            $released = $entry->file !== null && $entry->changes !== null ? $entry->version : null;
             $packages[] = new PackageRelease(
-                $this->composer_name($entry->repository, $path),
-                $released,
+                $entry->package,
+                $entry->version,
                 $entry->latest,
-                $this->constraints($data['require'] ?? null),
-                $this->constraints($data['conflict'] ?? null),
+                $this->constraints($entry->composer['require'] ?? null),
+                $this->constraints($entry->composer['conflict'] ?? null),
             );
         }
         $report = $this->orderChecker->check($packages);
@@ -311,8 +305,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
         $latest = $this->get_latest_release($repository)?->version;
         $entry->latest = $latest;
-        $package = $this->composer_name($repository, $path);
-        $override = $overrides[$project] ?? $overrides[$package] ?? null;
+        $override = $overrides[$project] ?? $overrides[$entry->package] ?? null;
 
         if ($override !== null) {
             $entry->version = $override;
@@ -324,22 +317,18 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         }
         if ($latest === null) {
             $entry->reason = 'skipped, no release to base a version on';
-            $entry->file = null;
 
             return;
         }
         $suggestion = $this->suggester->suggest(
             $latest,
             $entry->changes,
-            $this->versionSources->resolve($package, $path, $prefix)
+            $this->versionSources->resolve($entry->package, $path, $prefix)
         );
-        $entry->suggestion = $suggestion;
         $entry->reason = $suggestion->reason;
         $entry->warnings = $suggestion->warnings;
         $entry->version = $suggestion->version;
-        if ($suggestion->version === null && !$suggestion->undecided) {
-            $entry->file = null;
-        }
+        $entry->undecided = $suggestion->undecided;
     }
 
     /**
@@ -347,10 +336,9 @@ class ReleasePrepCommand extends AbstractReleaseCommand
      */
     private function major_warnings(?string $latest, string $version, PrepEntry $entry): array
     {
-        if ($latest === null || preg_match('/^v?(\d+)\./', $latest, $m) !== 1) {
-            return [];
-        }
-        if ((int) $version <= (int) $m[1]) {
+        $before = $latest === null ? null : $this->major($latest);
+        $after = $this->major($version);
+        if ($before === null || $after === null || $after <= $before) {
             return [];
         }
         $changes = $entry->changes;
@@ -361,6 +349,15 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         }
 
         return [];
+    }
+
+    private function major(string $version): ?int
+    {
+        try {
+            return (int) explode('.', $this->versionParser->normalize($version), 2)[0];
+        } catch (\UnexpectedValueException) {
+            return null;
+        }
     }
 
     /**
@@ -377,23 +374,16 @@ class ReleasePrepCommand extends AbstractReleaseCommand
                 $entry->reason,
             ];
         }
-        if ($markdown) {
-            $this->output->writeln('| Package | Latest | Suggested | Reason |');
-            $this->output->writeln('|---|---|---|---|');
-            foreach ($rows as $row) {
-                $this->output->writeln('| ' . implode(' | ', $row) . ' |');
-            }
-        } else {
-            $table = new Table($this->output);
-            $table->setHeaders(['Package', 'Latest', 'Suggested', 'Reason']);
-            $table->setRows($rows);
-            $table->render();
-        }
+        $table = new Table($this->output);
+        $table->setStyle($markdown ? 'markdown' : 'default');
+        $table->setHeaders(['Package', 'Latest', 'Suggested', 'Reason']);
+        $table->setRows($rows);
+        $table->render();
         foreach ($entries as $entry) {
             if ($entry->warnings === []) {
                 continue;
             }
-            $this->output->writeln($markdown ? '' : '');
+            $this->output->writeln('');
             $this->output->writeln($markdown ? "**{$entry->label()}**" : "<comment>{$entry->label()}: check before releasing</comment>");
             foreach ($entry->warnings as $warning) {
                 $this->output->writeln('- ' . str_replace("\n", "\n  ", $warning));
@@ -410,7 +400,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         if (!$this->input->isInteractive()) {
             return $suggested;
         }
-        if ($suggested === null && $entry->suggestion?->undecided !== true) {
+        if ($suggested === null && !$entry->undecided) {
             return null;
         }
         $question = $suggested === null

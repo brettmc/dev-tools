@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Package\Changelog;
 
+use Composer\Semver\Semver;
+
 /**
  * Finds the version source for the few packages that have one.
  *
@@ -27,10 +29,8 @@ final class VersionSourceResolver
         if ($php === false || preg_match_all("/case\s+VERSION_\w+\s*=\s*'(\d+\.\d+\.\d+)'/", $php, $m) < 1) {
             return null;
         }
-        $versions = $m[1];
-        usort($versions, static fn (string $a, string $b): int => version_compare($a, $b));
 
-        return new VersionSource(end($versions));
+        return new VersionSource(Semver::rsort($m[1])[0]);
     }
 
     private function proto(string $file): ?VersionSource

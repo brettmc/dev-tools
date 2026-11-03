@@ -275,8 +275,8 @@ class ReleasePrepCommandTest extends TestCase
 
         $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'markdown']));
         $display = $this->tester->getDisplay();
-        $this->assertStringContainsString('| Package | Latest | Suggested | Reason |', $display);
-        $this->assertStringContainsString('| opentelemetry-php/api | 1.10.1 | 1.11.0 |', $display);
+        $this->assertStringContainsString('| Package               | Latest | Suggested | Reason                    |', $display);
+        $this->assertStringContainsString('| opentelemetry-php/api | 1.10.1 | 1.11.0    | breaking changes recorded |', $display);
         $this->assertStringContainsString('- Dropped X.', $display);
     }
 

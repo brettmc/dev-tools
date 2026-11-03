@@ -3,7 +3,7 @@ ifneq ("$(wildcard .env)","")
 	export $(.env)
 endif
 
-PHP_VERSION ?= 8.1
+PHP_VERSION ?= 8.2
 DC_RUN_PHP = docker compose run --rm php
 PSALM_THREADS ?= 1
 
