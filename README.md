@@ -14,12 +14,12 @@ should be able to do everything else, but will fail if you try to create a relea
 
 You need to [create a fine-grained github access token](https://github.com/settings/personal-access-tokens/new) to be able to create a release.
 
-For everything under `opentelemetry-php` (almost everything, ie the gitsplit destination):
+For everything under https://github.com/opentelemetry-php (API, SDK, contrib, etc):
 * resource owner: `opentelemetry-php`
 * repository access: `all repositories`
 * permissions: `contents:read-and-write`
 
-For `opentelemetry-php-instrumentation` (the extension):
+For https://github.com/open-telemetry/opentelemetry-php-instrumentation (the extension):
 * resouce owner: `open-telemetry`
 * repository access: (only selected) `open-telemetry/opentelemetry-php-instrumentation`
 * permissions: `contents:read-and-write`
