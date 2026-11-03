@@ -11,6 +11,8 @@ use OpenTelemetry\DevTools\Console\Release\Project;
 use OpenTelemetry\DevTools\Console\Release\PullRequest;
 use OpenTelemetry\DevTools\Console\Release\Release;
 use OpenTelemetry\DevTools\Console\Release\Repository;
+use OpenTelemetry\DevTools\Package\Composer\ConfigAttributes;
+use OpenTelemetry\DevTools\Package\Composer\PackageAttributeResolver;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\ResponseInterface;
 use Symfony\Component\Console\Input\InputInterface;
@@ -19,6 +21,8 @@ use Symfony\Component\Yaml\Parser;
 
 abstract class AbstractReleaseCommand extends BaseCommand
 {
+    protected const GITSPLIT_FILE = '.gitsplit.yml';
+    protected const COMPOSER_FILE = 'composer.json';
     protected const AVAILABLE_REPOS = [
         'core'    => 'open-telemetry/opentelemetry-php',
         'contrib' => 'open-telemetry/opentelemetry-php-contrib',
@@ -264,5 +268,87 @@ abstract class AbstractReleaseCommand extends BaseCommand
         }
 
         return $repositories;
+    }
+
+    /**
+     * The packages of the monorepo checked out at $path, from its own .gitsplit.yml: the root
+     * composer.json of a monorepo is not named after its repository (core is
+     * `open-telemetry/opentelemetry`), so the presence of split config is what identifies it.
+     *
+     * @return array<Repository>|null null when $path is not a monorepo checkout
+     */
+    protected function find_split_packages(string $path, ?string $filter): ?array
+    {
+        $gitsplitFile = $path . '/' . self::GITSPLIT_FILE;
+        $composerFile = $path . '/' . self::COMPOSER_FILE;
+        if (!file_exists($gitsplitFile) || !file_exists($composerFile)) {
+            $repos = implode(' or ', self::AVAILABLE_REPOS);
+            $this->output->writeln(sprintf(
+                '<error>%s is not a monorepo checkout (no %s and %s found)</error>',
+                $path,
+                self::GITSPLIT_FILE,
+                self::COMPOSER_FILE
+            ));
+            $this->output->writeln("<comment>Run this command from a {$repos} checkout, or pass --path=</comment>");
+
+            return null;
+        }
+        $config = $this->parser->parse((string) file_get_contents($gitsplitFile));
+        $name = (string) PackageAttributeResolver::create($composerFile)->resolve(ConfigAttributes::NAME);
+
+        return $this->map_gitsplit_repositories($config['splits'] ?? [], $name, $filter);
+    }
+
+    /**
+     * The file $name in the split package at $prefix, or null when it lies outside $root.
+     *
+     * The prefixes are read from the checkout's own .gitsplit.yml, which is committed content: a
+     * prefix of `../other-project`, or one that is a symlink pointing out of the tree, would
+     * otherwise let this command rewrite a file that the caller never selected with --path.
+     */
+    protected function contained_file(string $root, string $prefix, string $name): ?string
+    {
+        $target = "{$root}/{$prefix}/{$name}";
+
+        //realpath resolves symlinks, so prefer it where it answers; it returns false for a path that
+        //does not exist and for every stream wrapper (vfs:// in the tests), hence the lexical
+        //fallback, which is what makes containment checkable without touching the real filesystem.
+        $canonicalRoot = realpath($root) ?: self::normalize_path($root);
+        $canonicalTarget = realpath($target) ?: self::normalize_path($target);
+
+        $prefixOfRoot = rtrim($canonicalRoot, '/') . '/';
+
+        return str_starts_with($canonicalTarget, $prefixOfRoot) ? $canonicalTarget : null;
+    }
+
+    /**
+     * Collapse `.` and `..` segments textually, so that a path can be compared against a root
+     * without the filesystem being consulted. Any stream wrapper scheme is preserved.
+     */
+    protected static function normalize_path(string $path): string
+    {
+        $scheme = '';
+        if (preg_match('#^[a-zA-Z][a-zA-Z0-9+.\-]*://#', $path, $matches)) {
+            $scheme = $matches[0];
+            $path = substr($path, strlen($scheme));
+        }
+        $absolute = str_starts_with($path, '/');
+
+        $segments = [];
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                //popping past the start cannot be used to escape: the result is then shorter than
+                //the root it is compared against, so containment fails
+                array_pop($segments);
+
+                continue;
+            }
+            $segments[] = $segment;
+        }
+
+        return $scheme . ($absolute ? '/' : '') . implode('/', $segments);
     }
 }

@@ -57,6 +57,81 @@ Once all the info has been gathered, it will iterate over each repo with unrelea
 * generate release notes
 * create the release (unless `--dry-run` was specified)
 
+## Prepare a release
+
+`release:prep` picks the next version of each package from its `CHANGELOG.md`, and prepares the
+changelog for tagging. Run it before `release:run`, so the tag carries the dated changelog.
+
+Each changelog keeps its pending changes under `## Unreleased`, in
+[Keep a Changelog](https://keepachangelog.com) sections. The sections decide the version:
+
+| Unreleased contains | Suggested version |
+|---|---|
+| Nothing | No release |
+| Only `Fixed` or `Security` | Patch |
+| `Added`, `Changed` or `Deprecated` | Minor |
+| `Breaking changes` or `Removed` | Minor, and the entries are listed as warnings |
+
+A major is never suggested. Some breaking changes ship in 1.x minors, so the maintainer decides. Force
+one with `--set`, or type it at the prompt. A heading under Unreleased that is not one of the sections
+above is an error.
+
+Two packages take their version from a file in the checkout:
+* `open-telemetry/sem-conv` takes the newest `Version` case in `src/SemConv/Version.php`. It is released
+  only when that is newer than the latest tag.
+* `open-telemetry/gen-otlp-protobuf` mirrors `proto/otel/VERSION` exactly, patch included, so proto
+  `v1.11.1` is package `1.11.1`. It is released only when that is newer than the latest tag.
+
+Unlike `release:run`, this command works on a local monorepo checkout. It reads each package's
+`CHANGELOG.md` and `composer.json` there, takes the package list from `.gitsplit.yml`, and rewrites the
+changelogs. Only the latest-release lookups go over the GitHub API. Even `--dry-run` needs the checkout.
+
+Run it from the monorepo, where `dev-tools` is a dev dependency:
+
+```shell
+cd opentelemetry-php
+vendor/bin/otel release:prep --dry-run
+vendor/bin/otel release:prep --set=open-telemetry/sdk=2.0.0
+```
+
+Or run it from a `dev-tools` checkout and point `--path` at the monorepo:
+
+```shell
+bin/otel release:prep --path=../opentelemetry-php --dry-run
+```
+
+Options:
+- `--path=` - path to a monorepo checkout (default: working directory)
+- `--token=` - github token (optional, can also be passed by `GITHUB_TOKEN`)
+- `--filter=` - filter packages by prefix
+- `--dry-run` - report the suggestions without writing anything
+- `--date=` - release date as `YYYY-MM-DD` (default: today)
+- `--set=<package>=<version>` - release a package as this version, without prompting. Repeatable. The
+  package is the composer name or the split repository name.
+- `--format=` - `text` or `markdown`. Markdown suits a pull request description.
+- `--no-interaction` - accept every suggestion without prompting
+
+For each package it will:
+* skip it when it has no `CHANGELOG.md`
+* find the latest release of the split repository
+* print the latest version, the suggestion and the reason, then list any breaking entries
+* ask for the version (blank accepts the suggestion, `skip` skips, a typed version overrides)
+* rename `## Unreleased` to `## X.Y.Z - YYYY-MM-DD`, and add an empty `## Unreleased` above it
+
+A forced major warns when Unreleased records no breaking changes.
+
+Packages in a monorepo depend on each other's new versions, so after the versions are chosen it also
+checks the `require` and `conflict` constraints in each package's `composer.json`:
+* when a package needs another's new version (sdk `^1.16` needs api `1.11`, say), it prints the order to
+  tag them in
+* when a `require` excludes another package's new version, or a `conflict` matches it, it names the
+  package. This is how a forced major shows up: the dependents that need their constraint widened.
+
+Only packages in the run are checked. Packages outside it, such as the contrib packages that require the
+sdk, are not.
+
+Then review the changes with `git diff`, open a pull request, and once it is merged run `release:run`.
+
 ## Branch aliases
 
 Each package in a monorepo declares a [composer branch alias](https://getcomposer.org/doc/articles/aliases.md)
