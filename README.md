@@ -51,11 +51,18 @@ The script will then:
 
 Once all the info has been gathered, it will iterate over each repo with unreleased changes. For each repo:
 * list the changes
-* display the last release version, and ask for new version
+* display the last release version, and ask for new version (blank accepts the version in the package's `CHANGELOG.md`, `skip` skips)
 * ask if new release should be latest
 * ask if the new release should be a draft (eg so you can manually adjust the notes)
 * generate release notes
 * create the release (unless `--dry-run` was specified)
+
+The default version is the newest dated section (`## 1.45.0 - 2026-11-03`) of the package's `CHANGELOG.md` on
+the branch being tagged, when it is newer than the latest release. That is the section `release:prep` writes,
+so merge the `release:prep` pull request before running `release:run`.
+
+The release notes are the body of that section, followed by a compare link. A package with no `CHANGELOG.md`, or
+no section for the version you enter, gets the list of merged pull requests instead.
 
 ## Prepare a release
 
