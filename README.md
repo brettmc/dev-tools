@@ -84,7 +84,8 @@ one with `--set`, or type it at the prompt. A heading under Unreleased that is n
 above is an error.
 
 Two packages take their version from a file in the checkout:
-* `open-telemetry/sem-conv` takes the newest `Version` case in `src/SemConv/Version.php`. It is released
+* `open-telemetry/sem-conv` takes the version the generator wrote to
+  `script/semantic-conventions/templates/registry/php/version.txt`. It is released
   only when that is newer than the latest tag.
 * `open-telemetry/gen-otlp-protobuf` mirrors `proto/otel/VERSION` exactly, patch included, so proto
   `v1.11.1` is package `1.11.1`. It is released only when that is newer than the latest tag.
