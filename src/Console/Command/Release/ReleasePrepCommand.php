@@ -1,0 +1,448 @@
+<?php
+
+declare(strict_types=1);
+
+namespace OpenTelemetry\DevTools\Console\Command\Release;
+
+use Composer\Semver\VersionParser;
+use Http\Discovery\Psr18ClientDiscovery;
+use InvalidArgumentException;
+use OpenTelemetry\DevTools\Console\Release\PrepEntry;
+use OpenTelemetry\DevTools\Package\Changelog\ChangelogParser;
+use OpenTelemetry\DevTools\Package\Changelog\ChangelogRewriter;
+use OpenTelemetry\DevTools\Package\Changelog\ChangelogSection;
+use OpenTelemetry\DevTools\Package\Changelog\VersionSourceResolver;
+use OpenTelemetry\DevTools\Package\Changelog\VersionSuggester;
+use OpenTelemetry\DevTools\Package\Release\PackageRelease;
+use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
+use Psr\Http\Client\ClientInterface;
+use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Helper\Table;
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Yaml\Parser;
+
+/**
+ * Suggest the next version of each package of a monorepo checkout from its CHANGELOG.md, and
+ * prepare the changelog for tagging: the Unreleased section becomes the dated release.
+ */
+class ReleasePrepCommand extends AbstractReleaseCommand
+{
+    private const CHANGELOG_FILE = 'CHANGELOG.md';
+    private const VERSION_PATTERN = '/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/';
+
+    private ?ClientInterface $clientOverride;
+    private ChangelogParser $changelogParser;
+    private ChangelogRewriter $rewriter;
+    private VersionSuggester $suggester;
+    private VersionSourceResolver $versionSources;
+    private ReleaseOrderChecker $orderChecker;
+    private VersionParser $versionParser;
+    private int $failures = 0;
+
+    public function __construct(?ClientInterface $client = null)
+    {
+        parent::__construct();
+        //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
+        //when no PSR-18 client is installed, which should not happen merely by listing the commands
+        $this->clientOverride = $client;
+        $this->changelogParser = new ChangelogParser();
+        $this->rewriter = new ChangelogRewriter();
+        $this->suggester = new VersionSuggester();
+        $this->versionSources = new VersionSourceResolver();
+        $this->orderChecker = new ReleaseOrderChecker();
+        $this->versionParser = new VersionParser();
+    }
+
+    #[\Override]
+    protected function configure(): void
+    {
+        $this
+            ->setName('release:prep')
+            ->setDescription('Suggest the next version of each package from its CHANGELOG.md, and prepare the changelogs for tagging')
+            ->addOption('path', null, InputOption::VALUE_OPTIONAL, 'path to a monorepo checkout (default: working directory)')
+            ->addOption('token', ['t'], InputOption::VALUE_OPTIONAL, 'github token (default: GITHUB_TOKEN, optional)')
+            ->addOption('filter', null, InputOption::VALUE_OPTIONAL, 'filter by repository prefix')
+            ->addOption('dry-run', null, InputOption::VALUE_NONE, 'report the suggestions without writing anything')
+            ->addOption('date', null, InputOption::VALUE_OPTIONAL, 'release date, YYYY-MM-DD (default: today)')
+            ->addOption('set', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'release a package as a given version, <package>=<version>')
+            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'report format: text or markdown', 'text')
+        ;
+    }
+
+    /**
+     * The parent requires a token, but the release lookups are public and a token only raises the
+     * rate limit.
+     */
+    #[\Override]
+    protected function interact(InputInterface $input, OutputInterface $output): void
+    {
+    }
+
+    #[\Override]
+    protected function execute(InputInterface $input, OutputInterface $output): int
+    {
+        $this->registerInputAndOutput($input, $output);
+        $this->token = $input->getOption('token') ?: (getenv('GITHUB_TOKEN') ?: null);
+        $dryRun = (bool) $input->getOption('dry-run');
+        $markdown = $input->getOption('format') === 'markdown';
+        $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
+
+        $date = $input->getOption('date') ?? date('Y-m-d');
+        $parsedDate = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+        if ($parsedDate === false || $parsedDate->format('Y-m-d') !== $date) {
+            $output->writeln("<error>--date must be YYYY-MM-DD, got \"{$date}\"</error>");
+
+            return Command::FAILURE;
+        }
+        if (!in_array($input->getOption('format'), ['text', 'markdown'], true)) {
+            $output->writeln('<error>--format must be text or markdown</error>');
+
+            return Command::FAILURE;
+        }
+        $overrides = $this->parse_overrides($input->getOption('set'));
+        if ($overrides === null) {
+            return Command::FAILURE;
+        }
+
+        $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
+        $this->parser = new Parser();
+
+        try {
+            $found = $this->find_split_packages($path, $input->getOption('filter'));
+        } catch (\Exception $e) {
+            $output->writeln("<error>{$e->getCode()} {$e->getMessage()}</error>");
+
+            return Command::FAILURE;
+        }
+        if ($found === null) {
+            return Command::FAILURE;
+        }
+        if (count($found) === 0) {
+            $output->writeln('<error>No packages found!</error>');
+
+            return Command::FAILURE;
+        }
+        $entries = [];
+        foreach ($found as $repository) {
+            $entry = new PrepEntry($repository);
+            $this->read_composer($entry, $path);
+            $entries[] = $entry;
+        }
+        $unknown = array_diff(array_keys($overrides), $this->known_names($entries));
+        if ($unknown !== []) {
+            $output->writeln(sprintf('<error>--set names no package of this checkout: %s</error>', implode(', ', $unknown)));
+
+            return Command::FAILURE;
+        }
+        foreach ($entries as $entry) {
+            $this->assess($entry, $path, $overrides);
+        }
+
+        $this->report($entries, $markdown);
+
+        foreach ($entries as $entry) {
+            if (!$dryRun && !$entry->forced) {
+                $entry->version = $this->choose($entry);
+            }
+        }
+        $this->report_order($entries);
+
+        $written = [];
+        foreach ($entries as $entry) {
+            if ($entry->version === null || $dryRun) {
+                continue;
+            }
+            if ($this->write($entry, $date)) {
+                $written[] = $entry->repository->upstream->path . '/' . self::CHANGELOG_FILE;
+            }
+        }
+
+        if ($this->failures > 0) {
+            $output->writeln(sprintf('<error>%d problems, see above</error>', $this->failures));
+
+            return Command::FAILURE;
+        }
+        if ($dryRun) {
+            $output->writeln('<comment>[DRY-RUN] no files were changed</comment>');
+        } elseif ($written !== []) {
+            $output->writeln(sprintf('<info>Prepared %d changelogs:</info>', count($written)));
+            foreach ($written as $file) {
+                $output->writeln("  {$file}");
+            }
+            $output->writeln('<info>Review with `git diff`, open a pull request, and once it is merged run `release:run` to tag.</info>');
+        } else {
+            $output->writeln('<info>Nothing to release.</info>');
+        }
+
+        return Command::SUCCESS;
+    }
+
+    /**
+     * @param array<string> $set values of --set
+     * @return array<string, string>|null version by package name, or null when a value is malformed
+     */
+    private function parse_overrides(array $set): ?array
+    {
+        $overrides = [];
+        foreach ($set as $item) {
+            [$name, $version] = array_pad(explode('=', $item, 2), 2, '');
+            if ($name === '' || preg_match(self::VERSION_PATTERN, $version) !== 1) {
+                $this->output->writeln(sprintf('<error>--set expects <package>=<version>, got "%s"</error>', $item));
+
+                return null;
+            }
+            $overrides[$name] = $version;
+        }
+
+        return $overrides;
+    }
+
+    /**
+     * @param array<PrepEntry> $entries
+     * @return array<string>
+     */
+    private function known_names(array $entries): array
+    {
+        $names = [];
+        foreach ($entries as $entry) {
+            $names[] = $entry->repository->downstream->project;
+            $names[] = $entry->package;
+        }
+
+        return $names;
+    }
+
+    /**
+     * Fill in the package name and composer.json of the split. The name is not always derivable from
+     * the name of the repository it is split to, so it falls back to that guess only when there is no
+     * composer.json.
+     */
+    private function read_composer(PrepEntry $entry, string $path): void
+    {
+        $file = $this->contained_file($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
+        $json = $file !== null && is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
+        $entry->composer = is_array($json) ? $json : [];
+        $name = $entry->composer['name'] ?? null;
+        $entry->package = is_string($name) ? $name : "open-telemetry/{$entry->repository->downstream->project}";
+    }
+
+    /**
+     * Print the order to tag packages that need each other's new versions, and warn about constraints
+     * the new versions break. Silent when there is nothing to say.
+     *
+     * @param array<PrepEntry> $entries
+     */
+    private function report_order(array $entries): void
+    {
+        $packages = [];
+        foreach ($entries as $entry) {
+            $packages[] = new PackageRelease(
+                $entry->package,
+                $entry->version,
+                $entry->latest,
+                $this->constraints($entry->composer['require'] ?? null),
+                $this->constraints($entry->composer['conflict'] ?? null),
+            );
+        }
+        $report = $this->orderChecker->check($packages);
+
+        if ($report->order !== []) {
+            $this->output->writeln('');
+            $this->output->writeln('Tag in this order: ' . implode(', ', $report->order));
+        }
+        if ($report->warnings !== []) {
+            $this->output->writeln('');
+            $this->output->writeln('<comment>Check the constraints between packages:</comment>');
+            foreach ($report->warnings as $warning) {
+                $this->output->writeln("- {$warning}");
+            }
+        }
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function constraints(mixed $section): array
+    {
+        return is_array($section) ? array_filter($section, 'is_string') : [];
+    }
+
+    /**
+     * @param array<string, string> $overrides
+     */
+    private function assess(PrepEntry $entry, string $path, array $overrides): void
+    {
+        $repository = $entry->repository;
+        $project = $repository->downstream->project;
+        $prefix = $repository->upstream->path;
+
+        $file = $this->contained_file($path, $prefix, self::CHANGELOG_FILE);
+        if ($file === null) {
+            $this->output->writeln(sprintf('<error>[%s] split prefix "%s" resolves outside %s, refusing to write</error>', $entry->label(), $prefix, $path));
+            $this->failures++;
+            $entry->reason = 'skipped, outside monorepo';
+
+            return;
+        }
+        if (!is_file($file)) {
+            $entry->reason = 'skipped, no CHANGELOG.md';
+
+            return;
+        }
+
+        try {
+            $entry->changes = $this->changelogParser->parseUnreleased((string) file_get_contents($file));
+        } catch (InvalidArgumentException $e) {
+            $this->output->writeln("<error>[{$entry->label()}] {$prefix}/" . self::CHANGELOG_FILE . ": {$e->getMessage()}</error>");
+            $this->failures++;
+            $entry->reason = 'error, ' . $e->getMessage();
+
+            return;
+        }
+        $entry->file = $file;
+
+        $latest = $this->get_latest_release($repository)?->version;
+        $entry->latest = $latest;
+        $override = $overrides[$project] ?? $overrides[$entry->package] ?? null;
+
+        if ($override !== null) {
+            $entry->version = $override;
+            $entry->forced = true;
+            $entry->reason = 'set by --set';
+            $entry->warnings = $this->major_warnings($latest, $override, $entry);
+
+            return;
+        }
+        if ($latest === null) {
+            $entry->reason = 'skipped, no release to base a version on';
+
+            return;
+        }
+        $suggestion = $this->suggester->suggest(
+            $latest,
+            $entry->changes,
+            $this->versionSources->resolve($entry->package, $path, $prefix)
+        );
+        $entry->reason = $suggestion->reason;
+        $entry->warnings = $suggestion->warnings;
+        $entry->version = $suggestion->version;
+        $entry->undecided = $suggestion->undecided;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function major_warnings(?string $latest, string $version, PrepEntry $entry): array
+    {
+        $before = $latest === null ? null : $this->major($latest);
+        $after = $this->major($version);
+        if ($before === null || $after === null || $after <= $before) {
+            return [];
+        }
+        $changes = $entry->changes;
+        if ($changes !== null
+            && $changes->entries(ChangelogSection::BreakingChanges) === []
+            && $changes->entries(ChangelogSection::Removed) === []) {
+            return ['major release, but Unreleased records no breaking changes'];
+        }
+
+        return [];
+    }
+
+    private function major(string $version): ?int
+    {
+        try {
+            return (int) explode('.', $this->versionParser->normalize($version), 2)[0];
+        } catch (\UnexpectedValueException) {
+            return null;
+        }
+    }
+
+    /**
+     * @param array<PrepEntry> $entries
+     */
+    private function report(array $entries, bool $markdown): void
+    {
+        $rows = [];
+        foreach ($entries as $entry) {
+            $rows[] = [
+                $entry->label(),
+                $entry->latest ?? 'none',
+                $entry->version ?? '',
+                $entry->reason,
+            ];
+        }
+        $table = new Table($this->output);
+        $table->setStyle($markdown ? 'markdown' : 'default');
+        $table->setHeaders(['Package', 'Latest', 'Suggested', 'Reason']);
+        $table->setRows($rows);
+        $table->render();
+        foreach ($entries as $entry) {
+            if ($entry->warnings === []) {
+                continue;
+            }
+            $this->output->writeln('');
+            $this->output->writeln($markdown ? "**{$entry->label()}**" : "<comment>{$entry->label()}: check before releasing</comment>");
+            foreach ($entry->warnings as $warning) {
+                $this->output->writeln('- ' . str_replace("\n", "\n  ", $warning));
+            }
+        }
+    }
+
+    /**
+     * Ask which version to release as. Null skips the package.
+     */
+    private function choose(PrepEntry $entry): ?string
+    {
+        $suggested = $entry->version;
+        if (!$this->input->isInteractive()) {
+            return $suggested;
+        }
+        if ($suggested === null && !$entry->undecided) {
+            return null;
+        }
+        $question = $suggested === null
+            ? "[{$entry->label()}] latest {$entry->latest}, {$entry->reason}. Version to release (blank to skip)"
+            : "[{$entry->label()}] latest {$entry->latest}. Version to release (blank for {$suggested}, `skip` to skip)";
+        $answer = $this->getStyle()->ask($question, $suggested, static function (?string $value): ?string {
+            if ($value === null || $value === '' || $value === 'skip' || preg_match(self::VERSION_PATTERN, $value) === 1) {
+                return $value;
+            }
+
+            throw new InvalidArgumentException("\"{$value}\" is not a version like 1.2.3");
+        });
+        if ($answer === null || $answer === '' || $answer === 'skip') {
+            return null;
+        }
+        foreach ($this->major_warnings($entry->latest, $answer, $entry) as $warning) {
+            $this->output->writeln("<comment>[{$entry->label()}] {$warning}</comment>");
+        }
+
+        return $answer;
+    }
+
+    private function write(PrepEntry $entry, string $date): bool
+    {
+        $file = (string) $entry->file;
+
+        try {
+            $updated = $this->rewriter->release((string) file_get_contents($file), (string) $entry->version, $date);
+        } catch (InvalidArgumentException $e) {
+            $this->output->writeln("<error>[{$entry->label()}] {$e->getMessage()}</error>");
+            $this->failures++;
+
+            return false;
+        }
+        if (@file_put_contents($file, $updated) === false) {
+            $this->output->writeln("<error>[{$entry->label()}] could not write {$file}</error>");
+            $this->failures++;
+
+            return false;
+        }
+        $this->output->isVerbose() && $this->output->writeln("[{$entry->label()}] wrote {$file}");
+
+        return true;
+    }
+}

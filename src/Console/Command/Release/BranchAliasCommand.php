@@ -8,8 +8,6 @@ use Http\Discovery\Psr18ClientDiscovery;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasStatus;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasUpdater;
-use OpenTelemetry\DevTools\Package\Composer\ConfigAttributes;
-use OpenTelemetry\DevTools\Package\Composer\PackageAttributeResolver;
 use Psr\Http\Client\ClientInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\Table;
@@ -26,8 +24,6 @@ use Symfony\Component\Yaml\Parser;
  */
 class BranchAliasCommand extends AbstractReleaseCommand
 {
-    private const GITSPLIT_FILE = '.gitsplit.yml';
-    private const COMPOSER_FILE = 'composer.json';
 
     private BranchAliasUpdater $updater;
     private ?ClientInterface $clientOverride;
@@ -144,88 +140,6 @@ class BranchAliasCommand extends AbstractReleaseCommand
     }
 
     /**
-     * The packages of the monorepo checked out at $path, from its own .gitsplit.yml: the root
-     * composer.json of a monorepo is not named after its repository (core is
-     * `open-telemetry/opentelemetry`), so the presence of split config is what identifies it.
-     *
-     * @return array<Repository>|null null when $path is not a monorepo checkout
-     */
-    private function find_split_packages(string $path, ?string $filter): ?array
-    {
-        $gitsplitFile = $path . '/' . self::GITSPLIT_FILE;
-        $composerFile = $path . '/' . self::COMPOSER_FILE;
-        if (!file_exists($gitsplitFile) || !file_exists($composerFile)) {
-            $repos = implode(' or ', self::AVAILABLE_REPOS);
-            $this->output->writeln(sprintf(
-                '<error>%s is not a monorepo checkout (no %s and %s found)</error>',
-                $path,
-                self::GITSPLIT_FILE,
-                self::COMPOSER_FILE
-            ));
-            $this->output->writeln("<comment>Run this command from a {$repos} checkout, or pass --path=</comment>");
-
-            return null;
-        }
-        $config = $this->parser->parse((string) file_get_contents($gitsplitFile));
-        $name = (string) PackageAttributeResolver::create($composerFile)->resolve(ConfigAttributes::NAME);
-
-        return $this->map_gitsplit_repositories($config['splits'] ?? [], $name, $filter);
-    }
-
-    /**
-     * The composer.json of the split package at $prefix, or null when it lies outside $root.
-     *
-     * The prefixes are read from the checkout's own .gitsplit.yml, which is committed content: a
-     * prefix of `../other-project`, or one that is a symlink pointing out of the tree, would
-     * otherwise let this command rewrite a composer.json that the caller never selected with --path.
-     */
-    private function contained_composer_file(string $root, string $prefix): ?string
-    {
-        $target = "{$root}/{$prefix}/" . self::COMPOSER_FILE;
-
-        //realpath resolves symlinks, so prefer it where it answers; it returns false for a path that
-        //does not exist and for every stream wrapper (vfs:// in the tests), hence the lexical
-        //fallback, which is what makes containment checkable without touching the real filesystem.
-        $canonicalRoot = realpath($root) ?: self::normalize_path($root);
-        $canonicalTarget = realpath($target) ?: self::normalize_path($target);
-
-        $prefixOfRoot = rtrim($canonicalRoot, '/') . '/';
-
-        return str_starts_with($canonicalTarget, $prefixOfRoot) ? $canonicalTarget : null;
-    }
-
-    /**
-     * Collapse `.` and `..` segments textually, so that a path can be compared against a root
-     * without the filesystem being consulted. Any stream wrapper scheme is preserved.
-     */
-    private static function normalize_path(string $path): string
-    {
-        $scheme = '';
-        if (preg_match('#^[a-zA-Z][a-zA-Z0-9+.\-]*://#', $path, $matches)) {
-            $scheme = $matches[0];
-            $path = substr($path, strlen($scheme));
-        }
-        $absolute = str_starts_with($path, '/');
-
-        $segments = [];
-        foreach (explode('/', $path) as $segment) {
-            if ($segment === '' || $segment === '.') {
-                continue;
-            }
-            if ($segment === '..') {
-                //popping past the start cannot be used to escape: the result is then shorter than
-                //the root it is compared against, so containment fails
-                array_pop($segments);
-
-                continue;
-            }
-            $segments[] = $segment;
-        }
-
-        return $scheme . ($absolute ? '/' : '') . implode('/', $segments);
-    }
-
-    /**
      * @return array<string>
      */
     private function handle_repository(Repository $repository, string $path, string $branchKey): array
@@ -240,7 +154,7 @@ class BranchAliasCommand extends AbstractReleaseCommand
             return [$package, $version, '', '', 'skipped, cannot parse version'];
         }
 
-        $composerFile = $this->contained_composer_file($path, $repository->upstream->path);
+        $composerFile = $this->contained_file($path, $repository->upstream->path, self::COMPOSER_FILE);
         if ($composerFile === null) {
             $this->output->writeln(sprintf(
                 '<error>[%s] split prefix "%s" resolves outside %s, refusing to write</error>',

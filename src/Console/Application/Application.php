@@ -11,6 +11,7 @@ use OpenTelemetry\DevTools\Console\Command\Release\PeclCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\PeclTagCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseListCommand;
+use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrepCommand;
 use OpenTelemetry\DevTools\Package\Composer\MultiRepositoryInfoResolver;
 use OpenTelemetry\DevTools\Package\Composer\PackageAttributeResolverFactory;
 use OpenTelemetry\DevTools\Package\GitSplit\ConfigResolver;
@@ -44,6 +45,7 @@ class Application extends BaseApplication
             new PeclCommand(),
             new PeclTagCommand(),
             new BranchAliasCommand(),
+            new ReleasePrepCommand(),
         ]);
     }
 }

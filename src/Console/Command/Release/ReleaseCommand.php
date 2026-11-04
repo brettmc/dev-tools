@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
+use Composer\Semver\Comparator;
 use Http\Discovery\Psr18ClientDiscovery;
 use OpenTelemetry\DevTools\Console\Release\Commit;
 use OpenTelemetry\DevTools\Console\Release\Diff;
 use OpenTelemetry\DevTools\Console\Release\Release;
+use OpenTelemetry\DevTools\Console\Release\ReleaseNotes;
 use OpenTelemetry\DevTools\Console\Release\Repository;
+use OpenTelemetry\DevTools\Package\Changelog\ChangelogReleases;
+use Psr\Http\Client\ClientInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Helper\QuestionHelper;
@@ -29,6 +33,15 @@ class ReleaseCommand extends AbstractReleaseCommand
      * @var array<string> packages released by this run
      */
     private array $released = [];
+    private ?ClientInterface $clientOverride;
+
+    public function __construct(?ClientInterface $client = null)
+    {
+        parent::__construct();
+        //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
+        //when no PSR-18 client is installed, which should not happen merely by listing the commands
+        $this->clientOverride = $client;
+    }
 
     #[\Override]
     protected function configure(): void
@@ -73,7 +86,7 @@ class ReleaseCommand extends AbstractReleaseCommand
             $this->output->writeln("<error>Invalid source: {$source}. Options: {$options}</error>");
         }
         $this->sources = $source ? [$source => self::AVAILABLE_REPOS[$source]] : self::AVAILABLE_REPOS;
-        $this->client = Psr18ClientDiscovery::find();
+        $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
         $this->parser = new Parser();
         $progress_section = $output->section();
         $main_section = $output->section();
@@ -230,11 +243,16 @@ class ReleaseCommand extends AbstractReleaseCommand
         $prev = ($repository->latestRelease === null)
             ? '-nothing-'
             : $repository->latestRelease->version;
-        $question = new Question("<question>Latest={$prev}, enter new tag (blank to skip):</question>", null);
+        $changelog = $this->fetch_changelog($repository);
+        $suggested = $this->suggest_version($changelog, $repository->latestRelease?->version);
+        $prompt = $suggested === null
+            ? "Latest={$prev}, enter new tag (blank to skip)"
+            : "Latest={$prev}, enter new tag (blank for {$suggested}, `skip` to skip)";
+        $question = new Question("<question>{$prompt}:</question>", $suggested);
 
         $helper = new QuestionHelper();
         $newVersion = $helper->ask($this->input, $this->output, $question);
-        if (!$newVersion) {
+        if (!$newVersion || $newVersion === 'skip') {
             $this->output->writeln("<info>[SKIP] not going to release {$repository->downstream}</info>");
 
             return;
@@ -244,20 +262,60 @@ class ReleaseCommand extends AbstractReleaseCommand
         $makeLatest = $helper->ask($this->input, $this->output, $question);
         $question = new ConfirmationQuestion('<question>Make this release a draft (y/N)?</question>', false);
         $isDraft = $helper->ask($this->input, $this->output, $question);
-        $notes = [];
-        if ($repository->latestRelease === null) {
-            $notes[] = 'Initial release';
-        } else {
-            $notes[] = "What's Changed:";
-            foreach ($repository->commits as $commit) {
-                $notes[] = "* {$commit->pullRequest->title} by @{$commit->pullRequest->author} in [{$commit->pullRequest->id}]({$commit->pullRequest->url})";
-            }
-            $notes[] = '';
-            $notes[] = "**Full Changelog**: https://github.com/{$repository->downstream}/compare/{$repository->latestRelease->version}...{$release->version}";
+        $fromChangelog = $changelog?->notes($newVersion);
+        if ($changelog !== null && $fromChangelog === null) {
+            $this->output->writeln("<comment>[{$repository->downstream}] CHANGELOG.md has no section for {$newVersion}, listing pull requests instead</comment>");
         }
-        $release->notes = implode(PHP_EOL, $notes);
+        $release->notes = (new ReleaseNotes())->build(
+            (string) $repository->downstream,
+            $repository->latestRelease?->version,
+            $newVersion,
+            $repository->commits,
+            $fromChangelog,
+        );
 
         $this->do_release($repository, $release, $makeLatest, $isDraft);
+    }
+
+    /**
+     * The package's CHANGELOG.md on the branch being tagged, or null when it has none. It is read
+     * from upstream, as the split repositories are only updated after the monorepo merges.
+     */
+    private function fetch_changelog(Repository $repository): ?ChangelogReleases
+    {
+        $url = "https://raw.githubusercontent.com/{$repository->upstream}/{$this->source_branch}/{$repository->upstream->path}/CHANGELOG.md";
+        $response = $this->fetch($url);
+        if ($response->getStatusCode() === 404) {
+            return null;
+        }
+        if ($response->getStatusCode() !== 200) {
+            $this->output->writeln("<comment>[{$repository->downstream}] could not read CHANGELOG.md ({$response->getStatusCode()}), listing pull requests instead</comment>");
+
+            return null;
+        }
+
+        return new ChangelogReleases($response->getBody()->getContents());
+    }
+
+    /**
+     * The newest dated version in the changelog, when it is newer than the latest release: that
+     * is what release:prep wrote, so it is the version this release is for.
+     */
+    private function suggest_version(?ChangelogReleases $changelog, ?string $latest): ?string
+    {
+        $version = $changelog?->latest();
+        if ($version === null) {
+            return null;
+        }
+        if ($latest === null) {
+            return $version;
+        }
+
+        try {
+            return Comparator::greaterThan($version, $latest) ? $version : null;
+        } catch (\UnexpectedValueException) {
+            return null;
+        }
     }
 
     private function do_release(Repository $repository, Release $release, bool $makeLatest, bool $isDraft)

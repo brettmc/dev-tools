@@ -1,0 +1,381 @@
+<?php
+
+declare(strict_types=1);
+
+namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Release;
+
+use Nyholm\Psr7\Response;
+use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrepCommand;
+use OpenTelemetry\DevTools\Tests\Unit\Behavior\UsesVfsTrait;
+use PHPUnit\Framework\TestCase;
+use Psr\Http\Client\ClientInterface;
+use Psr\Http\Message\RequestInterface;
+use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Tester\CommandTester;
+
+/**
+ * @covers \OpenTelemetry\DevTools\Console\Command\Release\ReleasePrepCommand
+ */
+class ReleasePrepCommandTest extends TestCase
+{
+    use UsesVfsTrait;
+
+    private const DATE = '2026-11-03';
+    private const FIXED = "# Changelog\n\n## Unreleased\n\n### Fixed\n\n- A bug.\n\n## 1.0.0 and earlier\n\nSee releases.\n";
+    private const ADDED = "# Changelog\n\n## Unreleased\n\n### Added\n\n- A feature.\n\n## 1.0.0 and earlier\n\nSee releases.\n";
+    private const BREAKING = "# Changelog\n\n## Unreleased\n\n### Breaking changes\n\n- Dropped X.\n\n## 1.0.0 and earlier\n\nSee releases.\n";
+    private const EMPTY = "# Changelog\n\n## Unreleased\n\n## 1.0.0 and earlier\n\nSee releases.\n";
+
+    /** @var array<string, string> latest tag by downstream project, eg api => 1.10.1 */
+    private array $releases = [];
+    private CommandTester $tester;
+
+    #[\Override]
+    public function setUp(): void
+    {
+        $this->setUpVcs();
+        $this->releases = ['api' => '1.10.1', 'sdk' => '1.15.0'];
+    }
+
+    public function test_dry_run_reports_the_suggestion_and_writes_nothing(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
+        $display = $this->tester->getDisplay();
+        $this->assertStringContainsString('opentelemetry-php/api', $display);
+        $this->assertStringContainsString('1.10.1', $display);
+        $this->assertStringContainsString('1.11.0', $display);
+        $this->assertStringContainsString('[DRY-RUN]', $display);
+        $this->assertSame(self::ADDED, $this->changelog('src/API'));
+    }
+
+    public function test_no_interaction_accepts_the_suggestion_and_prepares_the_changelog(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertSame(
+            "# Changelog\n\n## Unreleased\n\n## 1.10.2 - 2026-11-03\n\n### Fixed\n\n- A bug.\n\n## 1.0.0 and earlier\n\nSee releases.\n",
+            $this->changelog('src/API')
+        );
+        $this->assertStringContainsString('src/API/CHANGELOG.md', $this->tester->getDisplay());
+        $this->assertStringContainsString('release:run', $this->tester->getDisplay());
+    }
+
+    public function test_no_github_token_is_needed(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+    }
+
+    public function test_blank_answer_accepts_the_suggestion(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['inputs' => ['']]));
+        $this->assertStringContainsString('## 1.10.2 - 2026-11-03', $this->changelog('src/API'));
+    }
+
+    public function test_skip_answer_leaves_the_changelog_alone(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['inputs' => ['skip']]));
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_typed_version_overrides_the_suggestion(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['inputs' => ['2.0.0']]));
+        $this->assertStringContainsString('## 2.0.0 - 2026-11-03', $this->changelog('src/API'));
+    }
+
+    public function test_set_overrides_without_prompting(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED], 'src/SDK' => ['sdk', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--set' => ['sdk=1.20.0']], ['interactive' => false]));
+        $this->assertStringContainsString('## 1.20.0 - 2026-11-03', $this->changelog('src/SDK'));
+        $this->assertStringContainsString('## 1.10.2 - 2026-11-03', $this->changelog('src/API'));
+    }
+
+    public function test_set_accepts_the_composer_package_name(): void
+    {
+        $this->monorepo(['src/SDK' => ['sdk', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--set' => ['open-telemetry/sdk=1.20.0']], ['interactive' => false]));
+        $this->assertStringContainsString('## 1.20.0 - 2026-11-03', $this->changelog('src/SDK'));
+    }
+
+    public function test_set_accepts_the_composer_name_from_the_package(): void
+    {
+        $this->monorepo(['src/Instrumentation/Laravel' => ['opentelemetry-auto-laravel', self::FIXED]]);
+        file_put_contents(
+            $this->root->url() . '/src/Instrumentation/Laravel/composer.json',
+            '{"name":"open-telemetry/opentelemetry-auto-laravel"}'
+        );
+        $this->releases = ['opentelemetry-auto-laravel' => '1.0.0'];
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--set' => ['open-telemetry/opentelemetry-auto-laravel=1.2.0']], ['interactive' => false]));
+        $this->assertStringContainsString('## 1.2.0 - 2026-11-03', $this->changelog('src/Instrumentation/Laravel'));
+    }
+
+    public function test_composer_name_comes_from_composer_json_not_the_repository_name(): void
+    {
+        $this->monorepo(['src/Instrumentation/Laravel' => ['contrib-laravel', self::FIXED]]);
+        file_put_contents(
+            $this->root->url() . '/src/Instrumentation/Laravel/composer.json',
+            '{"name":"open-telemetry/opentelemetry-auto-laravel"}'
+        );
+        $this->releases = ['contrib-laravel' => '1.0.0'];
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--set' => ['open-telemetry/contrib-laravel=1.2.0']], ['interactive' => false]));
+        $this->assertStringContainsString('open-telemetry/contrib-laravel', $this->tester->getDisplay());
+    }
+
+    public function test_set_with_a_bad_version_fails_before_writing(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--set' => ['api=banana']], ['interactive' => false]));
+        $this->assertStringContainsString('banana', $this->tester->getDisplay());
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_set_for_an_unknown_package_fails(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--set' => ['nope=1.0.0']], ['interactive' => false]));
+        $this->assertStringContainsString('nope', $this->tester->getDisplay());
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_package_without_a_changelog_is_skipped_and_reported(): void
+    {
+        $this->monorepo(['src/API' => ['api', null]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('no CHANGELOG.md', $this->tester->getDisplay());
+    }
+
+    public function test_package_with_nothing_unreleased_is_not_released(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::EMPTY]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('no unreleased changes', $this->tester->getDisplay());
+        $this->assertSame(self::EMPTY, $this->changelog('src/API'));
+    }
+
+    public function test_unknown_heading_fails_and_names_the_heading(): void
+    {
+        $bad = "# Changelog\n\n## Unreleased\n\n### Housekeeping\n\n- Tidied.\n";
+        $this->monorepo(['src/API' => ['api', $bad]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('Housekeeping', $this->tester->getDisplay());
+        $this->assertSame($bad, $this->changelog('src/API'));
+    }
+
+    public function test_breaking_entries_are_listed_and_still_a_minor(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::BREAKING]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
+        $display = $this->tester->getDisplay();
+        $this->assertStringContainsString('1.11.0', $display);
+        $this->assertStringContainsString('Dropped X.', $display);
+    }
+
+    public function test_forced_major_without_breaking_entries_warns(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--set' => ['api=2.0.0']], ['interactive' => false]));
+        $this->assertStringContainsString('major', $this->tester->getDisplay());
+        $this->assertStringContainsString('## 2.0.0 - 2026-11-03', $this->changelog('src/API'));
+    }
+
+    public function test_forced_major_with_breaking_entries_does_not_warn_about_missing_entries(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::BREAKING]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--set' => ['api=2.0.0']], ['interactive' => false]));
+        $this->assertStringNotContainsString('no breaking', $this->tester->getDisplay());
+    }
+
+    public function test_pre_release_latest_has_no_default_when_not_interactive(): void
+    {
+        $this->releases = ['api' => '1.0.0RC1'];
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('pre-release', $this->tester->getDisplay());
+        $this->assertSame(self::ADDED, $this->changelog('src/API'));
+    }
+
+    public function test_pre_release_latest_prompts_without_a_default(): void
+    {
+        $this->releases = ['api' => '1.0.0RC1'];
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['inputs' => ['1.0.0']]));
+        $this->assertStringContainsString('## 1.0.0 - 2026-11-03', $this->changelog('src/API'));
+    }
+
+    public function test_package_with_no_release_is_skipped(): void
+    {
+        $this->releases = [];
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('no release', $this->tester->getDisplay());
+        $this->assertSame(self::ADDED, $this->changelog('src/API'));
+    }
+
+    public function test_split_prefix_outside_the_checkout_is_refused(): void
+    {
+        $this->monorepo(['../outside' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('resolves outside', $this->tester->getDisplay());
+    }
+
+    public function test_filter_limits_the_packages(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED], 'src/SDK' => ['sdk', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--filter' => 'SDK'], ['interactive' => false]));
+        $this->assertStringContainsString('## 1.15.1', $this->changelog('src/SDK'));
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_bad_date_fails(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--date' => '3 November'], ['interactive' => false]));
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_path_that_is_not_a_monorepo_fails(): void
+    {
+        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('is not a monorepo checkout', $this->tester->getDisplay());
+    }
+
+    public function test_markdown_format_prints_a_table_for_a_pull_request_body(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::BREAKING]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'markdown']));
+        $display = $this->tester->getDisplay();
+        $this->assertStringContainsString('| Package               | Latest | Suggested | Reason                    |', $display);
+        $this->assertStringContainsString('| opentelemetry-php/api | 1.10.1 | 1.11.0    | breaking changes recorded |', $display);
+        $this->assertStringContainsString('- Dropped X.', $display);
+    }
+
+    public function test_nested_bullets_in_a_warning_stay_nested(): void
+    {
+        $nested = "# Changelog\n\n## Unreleased\n\n### Breaking changes\n\n- Dropped:\n  - X\n  - Y\n\n## 1.0.0 and earlier\n\nSee releases.\n";
+        $this->monorepo(['src/API' => ['api', $nested]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'markdown']));
+        $this->assertStringContainsString("- Dropped:\n  - X\n  - Y\n", $this->tester->getDisplay());
+    }
+
+    public function test_tag_order_is_printed_when_a_package_needs_anothers_new_version(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED], 'src/SDK' => ['sdk', self::ADDED]]);
+        $this->composer('src/API', 'open-telemetry/api', []);
+        $this->composer('src/SDK', 'open-telemetry/sdk', ['open-telemetry/api' => '^1.11']);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
+        $this->assertStringContainsString('Tag in this order: open-telemetry/api, open-telemetry/sdk', $this->tester->getDisplay());
+    }
+
+    public function test_forced_major_warns_about_a_dependent_whose_constraint_excludes_it(): void
+    {
+        $this->releases['sdk'] = '1.16.0';
+        $this->monorepo(['src/SDK' => ['sdk', self::BREAKING], 'src/Exporter' => ['exporter', self::EMPTY]]);
+        $this->releases['exporter'] = '1.4.0';
+        $this->composer('src/SDK', 'open-telemetry/sdk', []);
+        $this->composer('src/Exporter', 'open-telemetry/exporter', ['open-telemetry/sdk' => '^1.16']);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--set' => ['sdk=2.0.0'], '--dry-run' => true]));
+        $this->assertStringContainsString('open-telemetry/exporter requires open-telemetry/sdk ^1.16, which excludes 2.0.0', $this->tester->getDisplay());
+    }
+
+    public function test_no_tag_order_without_dependencies_between_packages(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
+        $this->assertStringNotContainsString('Tag in this order', $this->tester->getDisplay());
+    }
+
+    /**
+     * @param array<string, array{0: string, 1: ?string}> $packages prefix => [downstream project, changelog]
+     */
+    private function monorepo(array $packages): void
+    {
+        $splits = '';
+        foreach ($packages as $prefix => [$project, $changelog]) {
+            $splits .= "  - prefix: \"{$prefix}\"\n    target: \"https://\${GH_TOKEN}@github.com/opentelemetry-php/{$project}.git\"\n";
+            if ($changelog !== null) {
+                $dir = $this->root->url() . '/' . $prefix;
+                is_dir($dir) || mkdir($dir, 0o777, true);
+                file_put_contents("{$dir}/CHANGELOG.md", $changelog);
+            }
+        }
+        file_put_contents($this->root->url() . '/.gitsplit.yml', "splits:\n{$splits}");
+        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry"}');
+    }
+
+    /**
+     * @param array<string, string> $require
+     */
+    private function composer(string $prefix, string $name, array $require): void
+    {
+        file_put_contents(
+            $this->root->url() . "/{$prefix}/composer.json",
+            json_encode(['name' => $name, 'require' => (object) $require])
+        );
+    }
+
+    private function changelog(string $prefix): string
+    {
+        return (string) file_get_contents($this->root->url() . "/{$prefix}/CHANGELOG.md");
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @param array<string, mixed> $options CommandTester options: interactive, inputs
+     */
+    private function prep(array $input, array $options = []): int
+    {
+        $client = $this->createMock(ClientInterface::class);
+        $client->method('sendRequest')->willReturnCallback(function (RequestInterface $request): Response {
+            preg_match('#/repos/opentelemetry-php/([^/]+)/releases/latest#', (string) $request->getUri(), $m);
+            $tag = $this->releases[$m[1] ?? ''] ?? null;
+
+            return $tag === null
+                ? new Response(404)
+                : new Response(200, [], json_encode(['tag_name' => $tag, 'created_at' => '2026-01-01T00:00:00Z']));
+        });
+        $this->tester = new CommandTester(new ReleasePrepCommand($client));
+        $inputs = $options['inputs'] ?? [];
+        unset($options['inputs']);
+        $inputs !== [] && $this->tester->setInputs($inputs);
+
+        return $this->tester->execute(
+            $input + ['--path' => $this->root->url(), '--date' => self::DATE],
+            $options
+        );
+    }
+}
