@@ -39,6 +39,42 @@ class GitRunner
     }
 
     /**
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout
+     */
+    public function hasCommit(string $path, string $sha): bool
+    {
+        return $this->test($path, ['rev-parse', '--verify', '--quiet', "{$sha}^{commit}"]);
+    }
+
+    /**
+     * Whether $ancestor is $descendant or one of its ancestors.
+     *
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout or either
+     *         commit is not in it
+     */
+    public function isAncestor(string $path, string $ancestor, string $descendant): bool
+    {
+        return $this->test($path, ['merge-base', '--is-ancestor', $ancestor, $descendant]);
+    }
+
+    /**
+     * Run a git command that answers yes or no by exiting 0 or 1. Any other exit is an error.
+     *
+     * @param list<string> $args
+     */
+    private function test(string $path, array $args): bool
+    {
+        $process = new Process([$this->git, ...$args], $path);
+        $process->run();
+        $code = $process->getExitCode();
+        if ($code !== 0 && $code !== 1) {
+            throw new RuntimeException(trim($process->getErrorOutput()) ?: "git {$args[0]} failed in {$path}");
+        }
+
+        return $code === 0;
+    }
+
+    /**
      * @param list<string> $args
      */
     private function run(string $path, array $args): string

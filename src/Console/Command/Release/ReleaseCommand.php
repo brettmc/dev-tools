@@ -8,7 +8,6 @@ use Composer\Semver\Comparator;
 use Http\Discovery\Psr18ClientDiscovery;
 use OpenTelemetry\DevTools\Console\Release\Commit;
 use OpenTelemetry\DevTools\Console\Release\Diff;
-use OpenTelemetry\DevTools\Console\Release\Project;
 use OpenTelemetry\DevTools\Console\Release\Release;
 use OpenTelemetry\DevTools\Console\Release\ReleaseNotes;
 use OpenTelemetry\DevTools\Console\Release\Repository;
@@ -32,14 +31,6 @@ use Symfony\Component\Yaml\Parser;
 
 class ReleaseCommand extends AbstractReleaseCommand
 {
-    /** The root composer.json name of each monorepo, which is not named after its repository */
-    private const ROOT_PACKAGES = [
-        'open-telemetry/opentelemetry-php' => 'open-telemetry/opentelemetry',
-        'open-telemetry/opentelemetry-php-contrib' => 'open-telemetry/opentelemetry-php-contrib',
-    ];
-
-    private string $source_branch;
-    private bool $dry_run;
     private bool $force;
     /**
      * @var array<string> packages released by this run
@@ -222,8 +213,7 @@ class ReleaseCommand extends AbstractReleaseCommand
         if ($this->find_split_packages($path, null) === null) {
             return null;
         }
-        $json = json_decode((string) file_get_contents($path . '/' . self::COMPOSER_FILE), true);
-        $name = is_array($json) && is_string($json['name'] ?? null) ? $json['name'] : '';
+        $name = $this->root_package_name($path);
         if ($name !== self::ROOT_PACKAGES[$upstream]) {
             $this->output->writeln(sprintf(
                 '<error>%s is not a checkout of %s: its composer.json is named "%s", not "%s"</error>',
@@ -258,32 +248,6 @@ class ReleaseCommand extends AbstractReleaseCommand
         }
 
         return ['path' => $path, 'upstream' => $upstream, 'head' => $head, 'dependencies' => $dependencies];
-    }
-
-    /**
-     * Report something that makes the release unsafe. A dry run warns and carries on, so it can
-     * still show what would be released.
-     *
-     * @return bool whether to stop
-     */
-    private function problem(string $message): bool
-    {
-        if ($this->dry_run) {
-            $this->output->writeln("<comment>[DRY-RUN] {$message}</comment>");
-
-            return false;
-        }
-        $this->output->writeln("<error>{$message}</error>");
-
-        return true;
-    }
-
-    private function branch_tip(string $upstream): string
-    {
-        $repository = new Repository();
-        $repository->upstream = new Project($upstream);
-
-        return $this->get_sha_for_branch($repository, $this->source_branch);
     }
 
     /**

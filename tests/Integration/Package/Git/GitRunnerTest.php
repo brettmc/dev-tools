@@ -68,12 +68,68 @@ class GitRunnerTest extends TestCase
         $this->assertSame([], (new GitRunner())->changes($this->dir));
     }
 
-    private function commit(): string
+    public function test_a_commit_in_the_repository_exists(): void
     {
-        file_put_contents($this->dir . '/composer.json', '{}');
-        $this->git('init', '--quiet');
+        $sha = $this->commit();
+
+        $this->assertTrue((new GitRunner())->hasCommit($this->dir, $sha));
+    }
+
+    public function test_a_commit_not_in_the_repository_does_not_exist(): void
+    {
+        $this->commit();
+
+        $this->assertFalse((new GitRunner())->hasCommit($this->dir, str_repeat('a', 40)));
+    }
+
+    public function test_has_commit_fails_outside_a_git_checkout(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('not a git repository');
+
+        (new GitRunner())->hasCommit($this->dir, str_repeat('a', 40));
+    }
+
+    public function test_an_earlier_commit_is_an_ancestor_of_head(): void
+    {
+        $first = $this->commit();
+        $this->commit('Second');
+
+        $this->assertTrue((new GitRunner())->isAncestor($this->dir, $first, 'HEAD'));
+    }
+
+    public function test_head_is_an_ancestor_of_itself(): void
+    {
+        $sha = $this->commit();
+
+        $this->assertTrue((new GitRunner())->isAncestor($this->dir, $sha, 'HEAD'));
+    }
+
+    public function test_a_commit_on_another_branch_is_not_an_ancestor_of_head(): void
+    {
+        $this->commit();
+        $this->git('checkout', '--quiet', '-b', 'other');
+        $other = $this->commit('Other');
+        $this->git('checkout', '--quiet', '-');
+
+        $this->assertFalse((new GitRunner())->isAncestor($this->dir, $other, 'HEAD'));
+    }
+
+    public function test_is_ancestor_fails_for_a_commit_not_in_the_repository(): void
+    {
+        $this->commit();
+
+        $this->expectException(RuntimeException::class);
+
+        (new GitRunner())->isAncestor($this->dir, str_repeat('a', 40), 'HEAD');
+    }
+
+    private function commit(string $message = 'Initial'): string
+    {
+        is_dir($this->dir . '/.git') || $this->git('init', '--quiet');
+        file_put_contents($this->dir . '/composer.json', json_encode(['message' => $message]));
         $this->git('add', 'composer.json');
-        $this->git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'Initial');
+        $this->git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', $message);
 
         return trim($this->git('rev-parse', 'HEAD'));
     }

@@ -6,6 +6,7 @@ namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Release;
 
 use Nyholm\Psr7\Response;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrepCommand;
+use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
 use OpenTelemetry\DevTools\Package\Spi\ProviderDependency;
@@ -35,6 +36,17 @@ class ReleasePrepCommandTest extends TestCase
     private ProviderDependencies $dependencies;
     private ?RuntimeException $readError = null;
     private CommandTester $tester;
+    /** @var list<string> URLs requested */
+    private array $requests = [];
+    /** tip of the upstream branch on GitHub, null for a failed lookup */
+    private ?string $tip = 'abc123';
+    private bool $tipIsLocal = true;
+    private bool $tipIsAncestor = true;
+    private ?RuntimeException $gitError = null;
+    /** @var list<string> uncommitted changes, as `git status --porcelain` lines */
+    private array $changes = [];
+    /** @var list<array{0: string, 1: string, 2: string}> arguments of each isAncestor() call */
+    private array $ancestorChecks = [];
 
     #[\Override]
     public function setUp(): void
@@ -427,6 +439,114 @@ class ReleasePrepCommandTest extends TestCase
         ], $this->replace());
     }
 
+    public function test_checkout_containing_the_branch_tip_passes(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/main', $this->requests);
+        $this->assertSame([[$this->root->url(), 'abc123', 'HEAD']], $this->ancestorChecks);
+        $this->assertStringContainsString('## 1.10.2 - 2026-11-03', $this->changelog('src/API'));
+    }
+
+    public function test_checkout_without_the_branch_tip_fails_and_says_to_fetch(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        $this->tipIsLocal = false;
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['inputs' => ['']]));
+        $display = $this->tester->getDisplay();
+        $this->assertStringContainsString('abc123', $display);
+        $this->assertStringContainsString('open-telemetry/opentelemetry-php main', $display);
+        $this->assertStringContainsStringIgnoringCase('fetch', $display);
+        $this->assertStringNotContainsString('Version to release', $display);
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_checkout_behind_the_branch_tip_fails(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        $this->tipIsAncestor = false;
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['inputs' => ['']]));
+        $display = $this->tester->getDisplay();
+        $this->assertStringContainsString('abc123', $display);
+        $this->assertStringContainsStringIgnoringCase('rebase', $display);
+        $this->assertStringNotContainsString('Version to release', $display);
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_uncommitted_changes_do_not_stop_a_prep(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        $this->changes = [' M src/API/composer.json'];
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('## 1.10.2 - 2026-11-03', $this->changelog('src/API'));
+    }
+
+    public function test_dry_run_warns_about_a_checkout_behind_the_branch_tip(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+        $this->tipIsAncestor = false;
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
+        $display = $this->tester->getDisplay();
+        $this->assertStringContainsString('[DRY-RUN]', $display);
+        $this->assertStringContainsString('abc123', $display);
+        $this->assertStringContainsString('1.11.0', $display);
+        $this->assertSame(self::ADDED, $this->changelog('src/API'));
+    }
+
+    public function test_branch_option_picks_the_branch_looked_up(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--branch' => '1.x'], ['interactive' => false]));
+        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/1.x', $this->requests);
+        $this->assertNotContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/main', $this->requests);
+    }
+
+    public function test_contrib_checkout_is_checked_against_contrib(): void
+    {
+        $this->monorepo(['src/Instrumentation/Laravel' => ['contrib-auto-laravel', self::FIXED]]);
+        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry-php-contrib"}');
+        $this->releases = ['contrib-auto-laravel' => '1.0.0'];
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php-contrib/git/matching-refs/heads/main', $this->requests);
+    }
+
+    public function test_checkout_of_an_unknown_monorepo_fails(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        file_put_contents($this->root->url() . '/composer.json', '{"name":"acme/monorepo"}');
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('acme/monorepo', $this->tester->getDisplay());
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_failed_branch_lookup_fails(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        $this->tip = null;
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('main', $this->tester->getDisplay());
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_checkout_git_cannot_read_fails(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        $this->gitError = new RuntimeException('fatal: not a git repository (or any of the parent directories): .git');
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString('fatal: not a git repository', $this->tester->getDisplay());
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
     /**
      * @param array<string, array{0: string, 1: ?string}> $packages prefix => [downstream project, changelog]
      */
@@ -498,7 +618,14 @@ class ReleasePrepCommandTest extends TestCase
     {
         $client = $this->createMock(ClientInterface::class);
         $client->method('sendRequest')->willReturnCallback(function (RequestInterface $request): Response {
-            preg_match('#/repos/opentelemetry-php/([^/]+)/releases/latest#', (string) $request->getUri(), $m);
+            $url = (string) $request->getUri();
+            $this->requests[] = $url;
+            if (preg_match('#/git/matching-refs/heads/(.+)$#', $url, $m) === 1) {
+                return $this->tip === null
+                    ? new Response(500)
+                    : new Response(200, [], json_encode([['ref' => "refs/heads/{$m[1]}", 'object' => ['sha' => $this->tip]]]));
+            }
+            preg_match('#/repos/opentelemetry-php/([^/]+)/releases/latest#', $url, $m);
             $tag = $this->releases[$m[1] ?? ''] ?? null;
 
             return $tag === null
@@ -509,7 +636,17 @@ class ReleasePrepCommandTest extends TestCase
         $reader->method('read')->willReturnCallback(fn (): ProviderDependencies => $this->readError !== null
             ? throw $this->readError
             : $this->dependencies);
-        $this->tester = new CommandTester(new ReleasePrepCommand($client, $reader));
+        $git = $this->createMock(GitRunner::class);
+        $git->method('hasCommit')->willReturnCallback(fn (): bool => $this->gitError !== null
+            ? throw $this->gitError
+            : $this->tipIsLocal);
+        $git->method('isAncestor')->willReturnCallback(function (string ...$args): bool {
+            $this->ancestorChecks[] = $args;
+
+            return $this->tipIsAncestor;
+        });
+        $git->method('changes')->willReturnCallback(fn (): array => $this->changes);
+        $this->tester = new CommandTester(new ReleasePrepCommand($client, $reader, $git));
         $inputs = $options['inputs'] ?? [];
         unset($options['inputs']);
         $inputs !== [] && $this->tester->setInputs($inputs);

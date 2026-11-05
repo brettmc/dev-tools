@@ -132,8 +132,27 @@ Or run it from a `dev-tools` checkout and point `--path` at the monorepo:
 bin/otel release:prep --path=../opentelemetry-php --dry-run
 ```
 
+### Prepare from an up-to-date checkout
+
+A checkout behind the upstream branch would date each release without the changelog entries it is
+missing. Those entries would stay under the new `## Unreleased`, and the tag would not carry them. So
+before reading anything, `release:prep` looks up the tip of `--branch` on GitHub and checks that the
+checkout's `HEAD` includes it. Commits on top of the branch and uncommitted changes are fine, since they
+are the prep.
+
+The tip is looked up on GitHub rather than through a local remote, because `origin` may be a fork. When
+the check fails, fetch the branch from the upstream repository and rebase onto it:
+
+```shell
+git fetch https://github.com/open-telemetry/opentelemetry-php main
+git rebase FETCH_HEAD
+```
+
+`--dry-run` warns instead of failing.
+
 Options:
 - `--path=` - path to a monorepo checkout (default: working directory)
+- `--branch=` - upstream branch the checkout must include (default: `main`)
 - `--token=` - github token (optional, can also be passed by `GITHUB_TOKEN`)
 - `--filter=` - filter packages by prefix
 - `--dry-run` - report the suggestions without writing anything
