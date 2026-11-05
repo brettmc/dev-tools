@@ -13,7 +13,8 @@ use UnexpectedValueException;
  * Checks the new versions of a release against each other's composer constraints.
  *
  * - A package whose constraint is satisfied only by another package's new version has to be tagged
- *   after it.
+ *   after it. That includes the `#[PackageDependency]` on its service providers, which composer
+ *   never sees: tagged first, the package installs, but the providers silently do not load.
  * - A `require` that excludes the new version of a package, or a `conflict` that matches it, is
  *   warned about. This is how a forced major shows up: dependents that need their constraint widened.
  *
@@ -43,7 +44,7 @@ final class ReleaseOrderChecker
         $warnings = [];
         $after = [];
         foreach ($packages as $package) {
-            foreach ($package->require as $name => $constraint) {
+            foreach ($this->requirements($package) as [$verb, $name, $constraint]) {
                 $dependency = $released[$name] ?? null;
                 $parsed = $dependency === null ? null : $this->constraint($constraint);
                 $new = $dependency?->version;
@@ -51,11 +52,11 @@ final class ReleaseOrderChecker
                     continue;
                 }
                 if (!$this->matches($parsed, $new)) {
-                    $warnings[] = sprintf('%s requires %s %s, which excludes %s', $package->name, $name, $constraint, $new);
+                    $warnings[] = sprintf('%s %s %s %s, which excludes %s', $package->name, $verb, $name, $constraint, $new);
 
                     continue;
                 }
-                if (isset($released[$package->name]) && !$this->matches($parsed, $dependency->latest)) {
+                if ($name !== $package->name && isset($released[$package->name]) && !$this->matches($parsed, $dependency->latest)) {
                     $after[$package->name][$name] = true;
                 }
             }
@@ -75,6 +76,24 @@ final class ReleaseOrderChecker
         }
 
         return new ReleaseOrderReport([...$order, ...$cycle], $warnings);
+    }
+
+    /**
+     * @return list<array{0: string, 1: string, 2: string}> verb, package name and constraint
+     */
+    private function requirements(PackageRelease $package): array
+    {
+        $requirements = [];
+        foreach ($package->require as $name => $constraint) {
+            $requirements[] = ['requires', $name, $constraint];
+        }
+        foreach ($package->spi as $name => $constraints) {
+            foreach (array_unique($constraints) as $constraint) {
+                $requirements[] = ['has #[PackageDependency] on', $name, $constraint];
+            }
+        }
+
+        return $requirements;
     }
 
     private function constraint(string $constraint): ?ConstraintInterface

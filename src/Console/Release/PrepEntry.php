@@ -18,6 +18,8 @@ class PrepEntry
     public string $package = '';
     /** @var array<string, mixed> its decoded composer.json, empty when there is none */
     public array $composer = [];
+    /** @var array<string, list<string>> `#[PackageDependency]` constraints of its providers, by package name */
+    public array $spi = [];
     /** whether the package has changes to release but no default version, so a person has to choose */
     public bool $undecided = false;
     /** the version to release as, once chosen */

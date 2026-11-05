@@ -25,6 +25,7 @@
         "symfony/console": "^7.3|^8.0",
         "symfony/polyfill-php83": "^1.32",
         "symfony/polyfill-php84": "^1.32",
+        "symfony/process": "^7.3|^8.0",
         "symfony/runtime": "^7.3|^8.0",
         "symfony/service-contracts": "^1|^2.5|^3.0",
         "symfony/yaml": "^7.3|^8.0"
@@ -37,7 +38,10 @@
     "autoload-dev": {
         "psr-4": {
             "OpenTelemetry\\DevTools\\Tests\\": "tests"
-        }
+        },
+        "exclude-from-classmap": [
+            "tests/**/_files/"
+        ]
     },
     "require-dev": {
         "bamarni/composer-bin-plugin": "^1.8",

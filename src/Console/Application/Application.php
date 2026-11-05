@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Application;
 
+use OpenTelemetry\DevTools\Console\Command\Packages\SpiCheckCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\ValidateInstallationCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\ValidatePackagesCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\BranchAliasCommand;
@@ -46,6 +47,7 @@ class Application extends BaseApplication
             new PeclTagCommand(),
             new BranchAliasCommand(),
             new ReleasePrepCommand(),
+            new SpiCheckCommand(),
         ]);
     }
 }

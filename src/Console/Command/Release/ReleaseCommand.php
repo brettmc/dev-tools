@@ -8,10 +8,16 @@ use Composer\Semver\Comparator;
 use Http\Discovery\Psr18ClientDiscovery;
 use OpenTelemetry\DevTools\Console\Release\Commit;
 use OpenTelemetry\DevTools\Console\Release\Diff;
+use OpenTelemetry\DevTools\Console\Release\Project;
 use OpenTelemetry\DevTools\Console\Release\Release;
 use OpenTelemetry\DevTools\Console\Release\ReleaseNotes;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogReleases;
+use OpenTelemetry\DevTools\Package\Git\GitRunner;
+use OpenTelemetry\DevTools\Package\Release\PackageRelease;
+use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
+use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
+use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
 use Psr\Http\Client\ClientInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
@@ -26,6 +32,12 @@ use Symfony\Component\Yaml\Parser;
 
 class ReleaseCommand extends AbstractReleaseCommand
 {
+    /** The root composer.json name of each monorepo, which is not named after its repository */
+    private const ROOT_PACKAGES = [
+        'open-telemetry/opentelemetry-php' => 'open-telemetry/opentelemetry',
+        'open-telemetry/opentelemetry-php-contrib' => 'open-telemetry/opentelemetry-php-contrib',
+    ];
+
     private string $source_branch;
     private bool $dry_run;
     private bool $force;
@@ -33,14 +45,22 @@ class ReleaseCommand extends AbstractReleaseCommand
      * @var array<string> packages released by this run
      */
     private array $released = [];
+    /** @var array<string, ?ChangelogReleases> CHANGELOG.md on the branch being tagged, by downstream repository */
+    private array $changelogs = [];
     private ?ClientInterface $clientOverride;
+    private PackageDependencyReader $dependencyReader;
+    private GitRunner $git;
+    /** @var array<string, string> the tip of the branch being tagged when the run started, by upstream repository */
+    private array $tips = [];
 
-    public function __construct(?ClientInterface $client = null)
+    public function __construct(?ClientInterface $client = null, ?PackageDependencyReader $dependencyReader = null, ?GitRunner $git = null)
     {
         parent::__construct();
         //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
         //when no PSR-18 client is installed, which should not happen merely by listing the commands
         $this->clientOverride = $client;
+        $this->dependencyReader = $dependencyReader ?? new PackageDependencyReader();
+        $this->git = $git ?? new GitRunner();
     }
 
     #[\Override]
@@ -55,6 +75,7 @@ class ReleaseCommand extends AbstractReleaseCommand
             ->addOption('repo', ['r'], InputOption::VALUE_OPTIONAL, 'repo to handle (core, contrib)')
             ->addOption('filter', null, InputOption::VALUE_OPTIONAL, 'filter by repository prefix')
             ->addOption('force', ['f'], InputOption::VALUE_NONE, 'force new releases even if no changes')
+            ->addOption('path', null, InputOption::VALUE_REQUIRED, 'checkout of the monorepo being released, at the commit being tagged (core, unless --repo contrib); required for core')
         ;
     }
     #[\Override]
@@ -81,16 +102,58 @@ class ReleaseCommand extends AbstractReleaseCommand
         $this->force = $input->getOption('force');
         $source = $input->getOption('repo');
         $filter = $input->getOption('filter');
-        if ($source && !array_key_exists($source, self::AVAILABLE_REPOS)) {
-            $options = implode(',', array_keys(self::AVAILABLE_REPOS));
-            $this->output->writeln("<error>Invalid source: {$source}. Options: {$options}</error>");
-        }
-        $this->sources = $source ? [$source => self::AVAILABLE_REPOS[$source]] : self::AVAILABLE_REPOS;
         $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
         $this->parser = new Parser();
         $progress_section = $output->section();
         $main_section = $output->section();
         $this->registerInputAndOutput($input, $main_section);
+        if ($source && !array_key_exists($source, self::AVAILABLE_REPOS)) {
+            $options = implode(',', array_keys(self::AVAILABLE_REPOS));
+            $this->output->writeln("<error>Invalid source: {$source}. Options: {$options}</error>");
+
+            return Command::FAILURE;
+        }
+        $this->sources = $source ? [$source => self::AVAILABLE_REPOS[$source]] : self::AVAILABLE_REPOS;
+
+        $path = $input->getOption('path');
+        $checkout = null;
+        if ($path === null && isset($this->sources['core'])) {
+            //core's providers carry #[PackageDependency] on packages released in the same run, and
+            //the tag order those need can only be read from a checkout
+            $this->output->writeln('<error>Releasing core needs --path, a checkout of it at the commit being tagged, with `composer install` run</error>');
+
+            return Command::FAILURE;
+        }
+        if ($path !== null) {
+            $checkout = $this->read_checkout(rtrim($path, '/'), self::AVAILABLE_REPOS[$source ?? 'core']);
+            if ($checkout === null) {
+                return Command::FAILURE;
+            }
+        }
+
+        try {
+            foreach ($this->sources as $upstream) {
+                $this->tips[$upstream] = $this->branch_tip($upstream);
+            }
+        } catch (\Exception $e) {
+            $this->output->writeln("<error>{$e->getMessage()}</error>");
+
+            return Command::FAILURE;
+        }
+        if ($checkout !== null && $checkout['head'] !== null && $checkout['head'] !== $this->tips[$checkout['upstream']]) {
+            $stop = $this->problem(sprintf(
+                '%s is at %s, but %s %s is at %s. Check out and pull %s before releasing.',
+                $checkout['path'],
+                $checkout['head'],
+                $checkout['upstream'],
+                $this->source_branch,
+                $this->tips[$checkout['upstream']],
+                $this->source_branch,
+            ));
+            if ($stop) {
+                return Command::FAILURE;
+            }
+        }
 
         $repositories = [];
 
@@ -120,10 +183,13 @@ class ReleaseCommand extends AbstractReleaseCommand
             $bar->advance();
         }
         $bar->finish();
-        $this->publish_repositories($repositories);
+        if ($checkout !== null) {
+            $repositories = $this->order($repositories, $checkout);
+        }
+        $completed = $this->publish_repositories($repositories);
         $this->remind_about_branch_aliases();
 
-        return Command::SUCCESS;
+        return $completed ? Command::SUCCESS : Command::FAILURE;
     }
 
     /**
@@ -139,8 +205,162 @@ class ReleaseCommand extends AbstractReleaseCommand
         $repository->latestRelease = $this->get_latest_release($repository);
         $repository->commits = $this->get_upstream_unreleased_commits($repository);
         $repository->diff = $this->get_diffs($repository);
+        $this->changelogs[(string) $repository->downstream] = $this->fetch_changelog($repository);
 
         return $repository;
+    }
+
+    /**
+     * The local checkout of $upstream, its HEAD, and the `#[PackageDependency]` attributes of its
+     * providers. Null, having said why, when it cannot be read or is not fit to release from. The
+     * head is null when git could not read it, which only a dry run carries on from.
+     *
+     * @return array{path: string, upstream: string, head: ?string, dependencies: ProviderDependencies}|null
+     */
+    private function read_checkout(string $path, string $upstream): ?array
+    {
+        if ($this->find_split_packages($path, null) === null) {
+            return null;
+        }
+        $json = json_decode((string) file_get_contents($path . '/' . self::COMPOSER_FILE), true);
+        $name = is_array($json) && is_string($json['name'] ?? null) ? $json['name'] : '';
+        if ($name !== self::ROOT_PACKAGES[$upstream]) {
+            $this->output->writeln(sprintf(
+                '<error>%s is not a checkout of %s: its composer.json is named "%s", not "%s"</error>',
+                $path,
+                $upstream,
+                $name,
+                self::ROOT_PACKAGES[$upstream],
+            ));
+
+            return null;
+        }
+
+        try {
+            $head = $this->git->head($path);
+            $changes = $this->git->changes($path);
+            if ($changes !== [] && $this->problem("{$path} has uncommitted changes, which would not be in the release:\n  " . implode("\n  ", $changes))) {
+                return null;
+            }
+        } catch (\RuntimeException $e) {
+            $head = null;
+            if ($this->problem("{$path} cannot be read by git: {$e->getMessage()}")) {
+                return null;
+            }
+        }
+
+        try {
+            $dependencies = $this->dependencyReader->read($path);
+        } catch (\RuntimeException $e) {
+            $this->output->writeln("<error>{$e->getMessage()}</error>");
+
+            return null;
+        }
+
+        return ['path' => $path, 'upstream' => $upstream, 'head' => $head, 'dependencies' => $dependencies];
+    }
+
+    /**
+     * Report something that makes the release unsafe. A dry run warns and carries on, so it can
+     * still show what would be released.
+     *
+     * @return bool whether to stop
+     */
+    private function problem(string $message): bool
+    {
+        if ($this->dry_run) {
+            $this->output->writeln("<comment>[DRY-RUN] {$message}</comment>");
+
+            return false;
+        }
+        $this->output->writeln("<error>{$message}</error>");
+
+        return true;
+    }
+
+    private function branch_tip(string $upstream): string
+    {
+        $repository = new Repository();
+        $repository->upstream = new Project($upstream);
+
+        return $this->get_sha_for_branch($repository, $this->source_branch);
+    }
+
+    /**
+     * Whether the branch being tagged is still where the run started. A merge since then would be
+     * tagged into the split repositories without having been checked or ordered.
+     */
+    private function branch_unmoved(Repository $repository): bool
+    {
+        $upstream = (string) $repository->upstream;
+        $tip = $this->branch_tip($upstream);
+        if ($tip === $this->tips[$upstream]) {
+            return true;
+        }
+
+        return !$this->problem(sprintf(
+            '%s %s moved from %s to %s during the release. Stopping before %s; run release:run again to release the rest.',
+            $upstream,
+            $this->source_branch,
+            $this->tips[$upstream],
+            $tip,
+            $repository->downstream,
+        ));
+    }
+
+    /**
+     * Put the packages of the checkout that need each other's new versions into tag order, through
+     * composer constraints and `#[PackageDependency]` alike. The new version is the one the changelog
+     * suggests, as that is what release:prep wrote. Other packages keep their place.
+     *
+     * @param array<Repository> $repositories
+     * @param array{path: string, upstream: string, head: ?string, dependencies: ProviderDependencies} $checkout
+     * @return array<Repository>
+     */
+    private function order(array $repositories, array $checkout): array
+    {
+        $local = array_filter(
+            $repositories,
+            static fn (Repository $repository): bool => (string) $repository->upstream === $checkout['upstream']
+        );
+        $spi = $checkout['dependencies']->byPrefix(array_values(array_map(
+            static fn (Repository $repository): string => $repository->upstream->path,
+            $local
+        )));
+        $packages = [];
+        $byName = [];
+        foreach ($local as $index => $repository) {
+            $prefix = $repository->upstream->path;
+            $file = $this->contained_file($checkout['path'], $prefix, self::COMPOSER_FILE);
+            $json = $file !== null && is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
+            $composer = is_array($json) ? $json : [];
+            $name = is_string($composer['name'] ?? null) ? $composer['name'] : "open-telemetry/{$repository->downstream->project}";
+            $latest = $repository->latestRelease?->version;
+            $packages[] = new PackageRelease(
+                $name,
+                $this->suggest_version($this->changelogs[(string) $repository->downstream] ?? null, $latest),
+                $latest,
+                $this->constraints($composer['require'] ?? null),
+                $this->constraints($composer['conflict'] ?? null),
+                $spi[$prefix] ?? [],
+            );
+            $byName[$name] = $index;
+        }
+        $report = (new ReleaseOrderChecker())->check($packages);
+        $this->print_order($report);
+
+        //the slots the ordered packages occupy, refilled in tag order
+        $slots = [];
+        foreach ($report->order as $name) {
+            $slots[] = $byName[$name];
+        }
+        sort($slots);
+        $ordered = $repositories;
+        foreach ($report->order as $i => $name) {
+            $ordered[$slots[$i]] = $repositories[$byName[$name]];
+        }
+
+        return array_values($ordered);
     }
 
     /**
@@ -213,9 +433,9 @@ class ReleaseCommand extends AbstractReleaseCommand
 
     /**
      * @param array<Repository> $repositories
-     * @return void
+     * @return bool false when the run stopped early
      */
-    private function publish_repositories(array $repositories): void
+    private function publish_repositories(array $repositories): bool
     {
         foreach ($repositories as $repo) {
             if (count($repo->commits) === 0 && !$this->force) {
@@ -223,15 +443,20 @@ class ReleaseCommand extends AbstractReleaseCommand
 
                 continue;
             }
-            $this->handle_unreleased($repo);
+            if (!$this->handle_unreleased($repo)) {
+                return false;
+            }
         }
+
+        return true;
     }
 
     /**
+     * @return bool false when the run should stop
      * @phan-suppress PhanUndeclaredMethod
      * @psalm-suppress UndefinedInterfaceMethod
      */
-    private function handle_unreleased(Repository $repository): void
+    private function handle_unreleased(Repository $repository): bool
     {
         $release = new Release();
         $cnt = count($repository->commits);
@@ -243,7 +468,7 @@ class ReleaseCommand extends AbstractReleaseCommand
         $prev = ($repository->latestRelease === null)
             ? '-nothing-'
             : $repository->latestRelease->version;
-        $changelog = $this->fetch_changelog($repository);
+        $changelog = $this->changelogs[(string) $repository->downstream] ?? null;
         $suggested = $this->suggest_version($changelog, $repository->latestRelease?->version);
         $prompt = $suggested === null
             ? "Latest={$prev}, enter new tag (blank to skip)"
@@ -255,7 +480,7 @@ class ReleaseCommand extends AbstractReleaseCommand
         if (!$newVersion || $newVersion === 'skip') {
             $this->output->writeln("<info>[SKIP] not going to release {$repository->downstream}</info>");
 
-            return;
+            return true;
         }
         $release->version = $newVersion;
         $question = new ConfirmationQuestion('<question>Make this the latest release (Y/n)?</question>', true);
@@ -274,7 +499,15 @@ class ReleaseCommand extends AbstractReleaseCommand
             $fromChangelog,
         );
 
+        if (!$this->branch_unmoved($repository)) {
+            return false;
+        }
+        if ($fromChangelog !== null && !$this->split_has_section($repository, $newVersion)) {
+            return false;
+        }
         $this->do_release($repository, $release, $makeLatest, $isDraft);
+
+        return true;
     }
 
     /**
@@ -295,6 +528,36 @@ class ReleaseCommand extends AbstractReleaseCommand
         }
 
         return new ChangelogReleases($response->getBody()->getContents());
+    }
+
+    /**
+     * Whether the split repository has caught up with the commit that dated $version in the
+     * changelog. gitsplit pushes to the splits some time after a merge upstream, and the tag is
+     * made on the split's branch, so tagging before then would tag the commit before it.
+     *
+     * Read through the contents API rather than raw.githubusercontent.com, which caches for
+     * minutes and so could report the split as behind, or ahead, of where it is.
+     */
+    private function split_has_section(Repository $repository, string $version): bool
+    {
+        $url = "https://api.github.com/repos/{$repository->downstream}/contents/CHANGELOG.md?ref={$this->source_branch}";
+        $response = $this->fetch($url);
+        $section = null;
+        if ($response->getStatusCode() === 200) {
+            $data = json_decode($response->getBody()->getContents());
+            $markdown = base64_decode((string) ($data->content ?? ''), true);
+            $section = $markdown === false ? null : (new ChangelogReleases($markdown))->notes($version);
+        }
+        if ($section !== null) {
+            return true;
+        }
+
+        return !$this->problem(sprintf(
+            '%s %s has no %s section in CHANGELOG.md yet. gitsplit may not have pushed the merge; wait for it and run release:run again.',
+            $repository->downstream,
+            $this->source_branch,
+            $version,
+        ));
     }
 
     /**

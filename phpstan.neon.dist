@@ -7,4 +7,6 @@ parameters:
     paths:
         - src
         - tests
+    excludePaths:
+        - tests/*/_files/*
 

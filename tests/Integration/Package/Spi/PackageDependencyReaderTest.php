@@ -1,0 +1,47 @@
+<?php
+
+declare(strict_types=1);
+
+namespace OpenTelemetry\DevTools\Tests\Integration\Package\Spi;
+
+use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
+use OpenTelemetry\DevTools\Package\Spi\ProviderDependency;
+use PHPUnit\Framework\TestCase;
+use RuntimeException;
+
+/**
+ * @covers \OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader
+ */
+class PackageDependencyReaderTest extends TestCase
+{
+    private const MONOREPO = __DIR__ . '/_files/monorepo';
+
+    public function test_reads_the_attributes_of_each_provider(): void
+    {
+        $result = (new PackageDependencyReader())->read(self::MONOREPO);
+
+        $this->assertEquals(
+            [
+                new ProviderDependency('Fixture\ProviderWithDependencies', 'open-telemetry/exporter-otlp', '^1.5', 'src/ProviderWithDependencies.php'),
+                new ProviderDependency('Fixture\ProviderWithDependencies', 'open-telemetry/transport-grpc', '^1', 'src/ProviderWithDependencies.php'),
+                new ProviderDependency('Fixture\ProviderWithNamedArguments', 'symfony/dotenv', '^7.0', 'src/ProviderWithNamedArguments.php'),
+            ],
+            $result->dependencies
+        );
+    }
+
+    public function test_reports_providers_that_do_not_load(): void
+    {
+        $result = (new PackageDependencyReader())->read(self::MONOREPO);
+
+        $this->assertSame(['Fixture\MissingProvider'], $result->missing);
+    }
+
+    public function test_fails_without_an_installed_vendor_directory(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('composer install');
+
+        (new PackageDependencyReader())->read(__DIR__);
+    }
+}

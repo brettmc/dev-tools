@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OpenTelemetry\DevTools\Tests\Unit\Console\Application;
 
 use OpenTelemetry\DevTools\Console\Application\Application;
+use OpenTelemetry\DevTools\Console\Command\Packages\SpiCheckCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\ValidatePackagesCommand;
 use PHPUnit\Framework\TestCase;
 
@@ -15,6 +16,7 @@ class ApplicationTest extends TestCase
 {
     private const COMMAND_CLASSES = [
         ValidatePackagesCommand::class,
+        SpiCheckCommand::class,
     ];
 
     public function test_commands(): void

@@ -1,0 +1,13 @@
+{
+    "name": "fixture/monorepo",
+    "extra": {
+        "spi": {
+            "Fixture\\Service": [
+                "Fixture\\ProviderWithDependencies",
+                "Fixture\\ProviderWithNamedArguments",
+                "Fixture\\ProviderWithoutDependencies",
+                "Fixture\\MissingProvider"
+            ]
+        }
+    }
+}
