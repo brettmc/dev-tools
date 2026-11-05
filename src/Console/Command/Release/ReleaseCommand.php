@@ -502,6 +502,9 @@ class ReleaseCommand extends AbstractReleaseCommand
         if (!$this->branch_unmoved($repository)) {
             return false;
         }
+        if ($fromChangelog !== null && !$this->split_has_section($repository, $newVersion)) {
+            return false;
+        }
         $this->do_release($repository, $release, $makeLatest, $isDraft);
 
         return true;
@@ -525,6 +528,36 @@ class ReleaseCommand extends AbstractReleaseCommand
         }
 
         return new ChangelogReleases($response->getBody()->getContents());
+    }
+
+    /**
+     * Whether the split repository has caught up with the commit that dated $version in the
+     * changelog. gitsplit pushes to the splits some time after a merge upstream, and the tag is
+     * made on the split's branch, so tagging before then would tag the commit before it.
+     *
+     * Read through the contents API rather than raw.githubusercontent.com, which caches for
+     * minutes and so could report the split as behind, or ahead, of where it is.
+     */
+    private function split_has_section(Repository $repository, string $version): bool
+    {
+        $url = "https://api.github.com/repos/{$repository->downstream}/contents/CHANGELOG.md?ref={$this->source_branch}";
+        $response = $this->fetch($url);
+        $section = null;
+        if ($response->getStatusCode() === 200) {
+            $data = json_decode($response->getBody()->getContents());
+            $markdown = base64_decode((string) ($data->content ?? ''), true);
+            $section = $markdown === false ? null : (new ChangelogReleases($markdown))->notes($version);
+        }
+        if ($section !== null) {
+            return true;
+        }
+
+        return !$this->problem(sprintf(
+            '%s %s has no %s section in CHANGELOG.md yet. gitsplit may not have pushed the merge; wait for it and run release:run again.',
+            $repository->downstream,
+            $this->source_branch,
+            $version,
+        ));
     }
 
     /**

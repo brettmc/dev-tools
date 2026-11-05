@@ -38,6 +38,8 @@ class ReleaseCommandTest extends TestCase
     private ?string $head = 'abc123';
     /** @var list<string> */
     private array $changes = [];
+    /** @var array<string, ?string> CHANGELOG.md of the split repository by project, null for none; the upstream one when unset */
+    private array $splitChangelogs = [];
     /** @var list<string> the branch tip for each lookup in turn, the last repeating */
     private array $tips = ['abc123'];
     /** @var resource */
@@ -190,6 +192,56 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame(1, $status);
         $this->assertNull($this->post());
         $this->assertStringContainsString('moved from abc123 to def789', $this->output());
+    }
+
+    public function test_release_stops_when_the_split_lacks_the_changelog_section(): void
+    {
+        $this->splitChangelogs = ['sem-conv' => self::section('1.44.0')];
+
+        $status = $this->run_release("\n\n\n");
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('opentelemetry-php/sem-conv main has no 1.45.0 section in CHANGELOG.md yet', $this->output());
+    }
+
+    public function test_release_stops_when_the_split_has_no_changelog(): void
+    {
+        $this->splitChangelogs = ['sem-conv' => null];
+
+        $status = $this->run_release("\n\n\n");
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('has no 1.45.0 section in CHANGELOG.md yet', $this->output());
+    }
+
+    public function test_split_changelog_is_read_through_the_api(): void
+    {
+        $this->run_release("\n\n\n");
+
+        $urls = array_column($this->requests, 'url');
+        $this->assertContains('https://api.github.com/repos/opentelemetry-php/sem-conv/contents/CHANGELOG.md?ref=main', $urls);
+    }
+
+    public function test_dry_run_warns_when_the_split_lacks_the_changelog_section(): void
+    {
+        $this->splitChangelogs = ['sem-conv' => self::section('1.44.0')];
+
+        $status = $this->run_release("\n\n\n", ['--dry-run' => true]);
+
+        $this->assertSame(0, $status);
+        $this->assertStringContainsString('has no 1.45.0 section in CHANGELOG.md yet', $this->output());
+        $this->assertStringContainsString('[DRY-RUN] https://api.github.com/repos/opentelemetry-php/sem-conv/releases', $this->output());
+    }
+
+    public function test_split_is_not_checked_for_a_version_the_changelog_does_not_have(): void
+    {
+        $this->splitChangelogs = ['sem-conv' => self::section('1.44.0')];
+
+        $this->run_release("1.46.0\n\n\n");
+
+        $this->assertSame('1.46.0', $this->created()['tag_name']);
     }
 
     public function test_path_that_is_not_a_monorepo_fails_before_calling_github(): void
@@ -450,7 +502,11 @@ class ReleaseCommandTest extends TestCase
             return new Response(200, [], $yaml);
         }
         foreach ($splits as $project => [$prefix, $latest, $changelog]) {
+            $split = array_key_exists($project, $this->splitChangelogs) ? $this->splitChangelogs[$project] : $changelog;
             $response = match (true) {
+                str_ends_with($url, "/{$project}/contents/CHANGELOG.md?ref=main") => $split === null
+                    ? new Response(404)
+                    : $json(['encoding' => 'base64', 'content' => chunk_split(base64_encode($split), 60, "\n")]),
                 str_ends_with($url, "/main/{$prefix}/CHANGELOG.md") => $changelog === null ? new Response(404) : new Response(200, [], $changelog),
                 str_contains($url, "/{$project}/releases/latest") => $json(['tag_name' => $latest, 'created_at' => '2026-01-01T00:00:00Z']),
                 str_contains($url, "/{$project}/compare/") => $json(['commits' => [['sha' => 'abc', 'commit' => ['message' => 'Add attributes']]]]),

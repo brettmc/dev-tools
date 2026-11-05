@@ -55,6 +55,11 @@ The branch tip is checked again before each release. If something is merged duri
 stops before the next release, as the new commits were not checked or ordered. Run it again to release
 the rest.
 
+The tag is made on the split repository's branch, which gitsplit updates some time after a merge. So
+before each release whose notes come from `CHANGELOG.md`, the command checks that the split's own
+`CHANGELOG.md` already has that version's section. If it doesn't, the run stops: wait for gitsplit and
+run it again. With `--dry-run`, it warns instead.
+
 The script will then:
 * fetch `.gitsplit.yaml` from source repositories
 * process yaml to determine downstream (read-only) repositories and their path association in upstream (eg open-telemetry/opentelemetry-php:/src/API -> opentelemetry-php/api)
