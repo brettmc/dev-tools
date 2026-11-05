@@ -27,6 +27,10 @@
         <include>
             <directory>src</directory>
         </include>
+        <exclude>
+            <!-- a script run in a subprocess: including it to count lines runs it, and it exits -->
+            <file>src/Package/Spi/read-package-dependencies.php</file>
+        </exclude>
     </coverage>
 
     <php>

@@ -121,6 +121,44 @@ class BranchAliasUpdaterTest extends TestCase
         $this->assertStringContainsString('"dev-main": "1.0.x-dev"', (string) file_get_contents($path));
     }
 
+    /**
+     * A version chosen for release outranks an alias ahead of it: sdk-configuration, aliased
+     * `1.0.x-dev`, is being released as 0.10.0.
+     */
+    public function test_update_lowers_an_alias_when_allowed(): void
+    {
+        $path = $this->createConfigFile(
+            str_replace('1.8.x-dev', '1.0.x-dev', self::CONFIG)
+        );
+
+        $update = $this->updater->update($path, self::BRANCH_KEY, '0.10.x-dev', allowLower: true);
+
+        $this->assertSame(BranchAliasStatus::Lowered, $update->status);
+        $this->assertSame('1.0.x-dev', $update->current);
+        $this->assertStringContainsString('"dev-main": "0.10.x-dev"', (string) file_get_contents($path));
+    }
+
+    /**
+     * @dataProvider provideCoveredVersions
+     */
+    public function test_covers(string $alias, string $version, bool $expected): void
+    {
+        $this->assertSame($expected, BranchAliasUpdater::covers($alias, $version));
+    }
+
+    public function provideCoveredVersions(): Generator
+    {
+        yield 'same minor' => ['1.11.x-dev', '1.11.0', true];
+        yield 'same minor, patch' => ['1.11.x-dev', '1.11.3', true];
+        yield 'older minor' => ['1.10.x-dev', '1.11.0', false];
+        yield 'newer minor' => ['1.12.x-dev', '1.11.0', false];
+        yield 'major alias' => ['1.x-dev', '1.11.1', true];
+        yield 'major alias, other major' => ['1.x-dev', '2.0.0', false];
+        yield 'pre-1' => ['0.10.x-dev', '0.10.0', true];
+        yield 'v prefix' => ['1.11.x-dev', 'v1.11.0', true];
+        yield 'not an alias' => ['dev-main', '1.11.0', false];
+    }
+
     public function test_update_does_not_write_on_dry_run(): void
     {
         $path = $this->createConfigFile(self::CONFIG);

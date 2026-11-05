@@ -13,9 +13,15 @@ use OpenTelemetry\DevTools\Package\Changelog\ChangelogRewriter;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogSection;
 use OpenTelemetry\DevTools\Package\Changelog\VersionSourceResolver;
 use OpenTelemetry\DevTools\Package\Changelog\VersionSuggester;
+use OpenTelemetry\DevTools\Package\Composer\BranchAliasStatus;
+use OpenTelemetry\DevTools\Package\Composer\BranchAliasUpdater;
+use OpenTelemetry\DevTools\Package\Composer\ReplaceUpdater;
+use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
 use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
+use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use Psr\Http\Client\ClientInterface;
+use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
@@ -25,12 +31,15 @@ use Symfony\Component\Yaml\Parser;
 
 /**
  * Suggest the next version of each package of a monorepo checkout from its CHANGELOG.md, and
- * prepare the changelog for tagging: the Unreleased section becomes the dated release.
+ * prepare the checkout for tagging: the Unreleased section becomes the dated release, the
+ * `dev-main` alias moves to the new version's line, and the root `replace` follows the aliases.
  */
 class ReleasePrepCommand extends AbstractReleaseCommand
 {
     private const CHANGELOG_FILE = 'CHANGELOG.md';
     private const VERSION_PATTERN = '/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/';
+
+    private const BRANCH_KEY = 'dev-main';
 
     private ?ClientInterface $clientOverride;
     private ChangelogParser $changelogParser;
@@ -39,9 +48,14 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     private VersionSourceResolver $versionSources;
     private ReleaseOrderChecker $orderChecker;
     private VersionParser $versionParser;
+    private PackageDependencyReader $dependencyReader;
+    private BranchAliasUpdater $aliasUpdater;
+    private ReplaceUpdater $replaceUpdater;
     private int $failures = 0;
+    /** heading of the list of file changes being printed */
+    private ?string $changesHeading = null;
 
-    public function __construct(?ClientInterface $client = null)
+    public function __construct(?ClientInterface $client = null, ?PackageDependencyReader $dependencyReader = null)
     {
         parent::__construct();
         //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
@@ -53,6 +67,9 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $this->versionSources = new VersionSourceResolver();
         $this->orderChecker = new ReleaseOrderChecker();
         $this->versionParser = new VersionParser();
+        $this->dependencyReader = $dependencyReader ?? new PackageDependencyReader();
+        $this->aliasUpdater = new BranchAliasUpdater();
+        $this->replaceUpdater = new ReplaceUpdater();
     }
 
     #[\Override]
@@ -136,6 +153,14 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
             return Command::FAILURE;
         }
+
+        try {
+            $this->read_package_dependencies($entries, $path);
+        } catch (RuntimeException $e) {
+            $output->writeln("<error>{$e->getMessage()}</error>");
+
+            return Command::FAILURE;
+        }
         foreach ($entries as $entry) {
             $this->assess($entry, $path, $overrides);
         }
@@ -150,13 +175,25 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $this->report_order($entries);
 
         $written = [];
+        $aliases = [];
         foreach ($entries as $entry) {
-            if ($entry->version === null || $dryRun) {
+            if ($entry->version === null) {
                 continue;
             }
-            if ($this->write($entry, $date)) {
+            if (!$dryRun) {
+                if (!$this->write($entry, $date)) {
+                    continue;
+                }
                 $written[] = $entry->repository->upstream->path . '/' . self::CHANGELOG_FILE;
             }
+            $alias = $this->update_alias($entry, $path, $dryRun);
+            if ($alias !== null) {
+                $aliases[$entry->package] = $alias;
+                $dryRun || $written[] = $entry->repository->upstream->path . '/' . self::COMPOSER_FILE;
+            }
+        }
+        if ($this->update_replace($path, $aliases, $dryRun) && !$dryRun) {
+            $written[] = self::COMPOSER_FILE;
         }
 
         if ($this->failures > 0) {
@@ -167,7 +204,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         if ($dryRun) {
             $output->writeln('<comment>[DRY-RUN] no files were changed</comment>');
         } elseif ($written !== []) {
-            $output->writeln(sprintf('<info>Prepared %d changelogs:</info>', count($written)));
+            $output->writeln(sprintf('<info>Changed %d files:</info>', count($written)));
             foreach ($written as $file) {
                 $output->writeln("  {$file}");
             }
@@ -229,6 +266,96 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     }
 
     /**
+     * Attach the `#[PackageDependency]` constraints of the checkout's service providers to the package
+     * each provider lives in.
+     *
+     * @param array<PrepEntry> $entries
+     * @throws RuntimeException when the attributes cannot be read, eg no `composer install` yet
+     */
+    private function read_package_dependencies(array $entries, string $path): void
+    {
+        $prefixes = array_map(static fn (PrepEntry $entry): string => $entry->repository->upstream->path, $entries);
+        $grouped = $this->dependencyReader->read($path)->byPrefix(array_values($prefixes));
+        foreach ($entries as $entry) {
+            $entry->spi = $grouped[$entry->repository->upstream->path] ?? [];
+        }
+    }
+
+    /**
+     * Point the package's `dev-main` alias at the line of its new version, unless it already covers
+     * it. The version was chosen, so an alias ahead of it is lowered rather than kept.
+     *
+     * @return string|null the new alias, or null when it is left as it is
+     */
+    private function update_alias(PrepEntry $entry, string $path, bool $dryRun): ?string
+    {
+        $version = (string) $entry->version;
+        $alias = BranchAliasUpdater::aliasForVersion($version);
+        $current = $entry->composer['extra']['branch-alias'][self::BRANCH_KEY] ?? null;
+        $file = $this->contained_file($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
+        if ($alias === null || $file === null || !is_string($current) || BranchAliasUpdater::covers($current, $version)) {
+            return null;
+        }
+
+        $update = $this->aliasUpdater->update($file, self::BRANCH_KEY, $alias, $dryRun, allowLower: true);
+        $line = "{$entry->package}: {$current} -> {$alias}";
+        switch ($update->status) {
+            case BranchAliasStatus::Updated:
+                $this->changes('Branch aliases', $line);
+
+                return $alias;
+            case BranchAliasStatus::Lowered:
+                $this->changes('Branch aliases', "<comment>{$line}, lowered</comment>");
+
+                return $alias;
+            case BranchAliasStatus::Ambiguous:
+            case BranchAliasStatus::WriteFailed:
+                $this->output->writeln("<error>[{$entry->label()}] {$file}: {$update->status->description()}</error>");
+                $this->failures++;
+
+                return null;
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * Point the root `replace` entry of every split package at its `dev-main` alias, so that a
+     * `#[PackageDependency]` on a package resolves inside the monorepo as it will once tagged.
+     *
+     * @param array<string, string> $aliases aliases just changed, by package name, which a dry run
+     *        has not written
+     */
+    private function update_replace(string $path, array $aliases, bool $dryRun): bool
+    {
+        try {
+            /** @var array<string, string> $versions */
+            $versions = array_filter([...MonorepoCheckout::read($path)->aliases, ...$aliases], 'is_string');
+            $changes = $this->replaceUpdater->update($path . '/' . self::COMPOSER_FILE, $versions, $dryRun);
+        } catch (RuntimeException $e) {
+            $this->output->writeln("<error>{$e->getMessage()}</error>");
+            $this->failures++;
+
+            return false;
+        }
+        foreach ($changes as $package => [$current, $version]) {
+            $this->changes('Root replace', "{$package}: {$current} -> {$version}");
+        }
+
+        return $changes !== [];
+    }
+
+    private function changes(string $heading, string $line): void
+    {
+        if ($this->changesHeading !== $heading) {
+            $this->output->writeln('');
+            $this->output->writeln("{$heading}:");
+            $this->changesHeading = $heading;
+        }
+        $this->output->writeln("  {$line}");
+    }
+
+    /**
      * Print the order to tag packages that need each other's new versions, and warn about constraints
      * the new versions break. Silent when there is nothing to say.
      *
@@ -244,29 +371,10 @@ class ReleasePrepCommand extends AbstractReleaseCommand
                 $entry->latest,
                 $this->constraints($entry->composer['require'] ?? null),
                 $this->constraints($entry->composer['conflict'] ?? null),
+                $entry->spi,
             );
         }
-        $report = $this->orderChecker->check($packages);
-
-        if ($report->order !== []) {
-            $this->output->writeln('');
-            $this->output->writeln('Tag in this order: ' . implode(', ', $report->order));
-        }
-        if ($report->warnings !== []) {
-            $this->output->writeln('');
-            $this->output->writeln('<comment>Check the constraints between packages:</comment>');
-            foreach ($report->warnings as $warning) {
-                $this->output->writeln("- {$warning}");
-            }
-        }
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function constraints(mixed $section): array
-    {
-        return is_array($section) ? array_filter($section, 'is_string') : [];
+        $this->print_order($this->orderChecker->check($packages));
     }
 
     /**

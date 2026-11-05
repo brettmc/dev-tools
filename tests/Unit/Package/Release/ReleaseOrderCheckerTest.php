@@ -66,6 +66,40 @@ class ReleaseOrderCheckerTest extends TestCase
         $this->assertSame(['o/api', 'o/sdk', 'o/exporter'], $report->order);
     }
 
+    public function test_package_dependency_only_the_new_version_satisfies_orders_the_dependency_first(): void
+    {
+        $report = $this->checker->check([
+            new PackageRelease('o/sdk-configuration', '0.10.0', '0.9.0', ['o/sdk' => '^1.16'], [], ['o/exporter-otlp' => ['^1.0.5', '^1.5']]),
+            new PackageRelease('o/exporter-otlp', '1.5.0', '1.4.0'),
+        ]);
+
+        $this->assertSame(['o/exporter-otlp', 'o/sdk-configuration'], $report->order);
+        $this->assertSame([], $report->warnings);
+    }
+
+    public function test_package_dependency_that_excludes_the_new_version_warns(): void
+    {
+        $report = $this->checker->check([
+            new PackageRelease('o/sdk-configuration', null, '0.9.0', [], [], ['o/exporter-otlp' => ['^1.5']]),
+            new PackageRelease('o/exporter-otlp', '2.0.0', '1.5.0'),
+        ]);
+
+        $this->assertSame(
+            ['o/sdk-configuration has #[PackageDependency] on o/exporter-otlp ^1.5, which excludes 2.0.0'],
+            $report->warnings
+        );
+    }
+
+    public function test_package_dependency_on_its_own_package_is_not_a_cycle(): void
+    {
+        $report = $this->checker->check([
+            new PackageRelease('o/sdk-configuration', '0.10.0', '0.9.0', [], [], ['o/sdk-configuration' => ['^0.10']]),
+        ]);
+
+        $this->assertSame([], $report->order);
+        $this->assertSame([], $report->warnings);
+    }
+
     public function test_constraint_that_excludes_a_new_major_names_the_dependent(): void
     {
         $report = $this->checker->check([

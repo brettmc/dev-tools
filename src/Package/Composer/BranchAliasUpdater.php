@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Package\Composer;
 
+use Composer\Semver\Constraint\Constraint;
+use Composer\Semver\VersionParser;
+use UnexpectedValueException;
+
 /**
  * Keeps `extra.branch-alias` in a package's composer.json in step with its released versions.
  *
@@ -27,10 +31,32 @@ class BranchAliasUpdater
     }
 
     /**
+     * Whether $version lies on the line $alias names, eg `1.x-dev` covers 1.11.1 and `1.10.x-dev`
+     * does not cover 1.11.0.
+     */
+    public static function covers(string $alias, string $version): bool
+    {
+        if (!preg_match('/^(\d+(?:\.\d+)?)\.x-dev$/', $alias, $matches)) {
+            return false;
+        }
+        $parser = new VersionParser();
+
+        try {
+            return $parser->parseConstraints("{$matches[1]}.*")
+                ->matches(new Constraint('==', $parser->normalize($version)));
+        } catch (UnexpectedValueException) {
+            return false;
+        }
+    }
+
+    /**
      * Point `extra.branch-alias.<branchKey>` at $alias, replacing only that value so that the rest
      * of the file (formatting, key order, comments composer itself would drop) survives untouched.
+     *
+     * An alias ahead of $alias is left alone unless $allowLower is set, for a version that has been
+     * chosen rather than calculated from the latest release.
      */
-    public function update(string $composerFilePath, string $branchKey, string $alias, bool $dryRun = false): BranchAliasUpdate
+    public function update(string $composerFilePath, string $branchKey, string $alias, bool $dryRun = false, bool $allowLower = false): BranchAliasUpdate
     {
         if (!file_exists($composerFilePath)) {
             return new BranchAliasUpdate(BranchAliasStatus::NotFound);
@@ -46,7 +72,8 @@ class BranchAliasUpdater
         if ($current === $alias) {
             return new BranchAliasUpdate(BranchAliasStatus::Unchanged, $current);
         }
-        if ($this->isAhead($current, $alias)) {
+        $ahead = $this->isAhead($current, $alias);
+        if ($ahead && !$allowLower) {
             //an alias higher than anything released is aspirational rather than stale, and lowering
             //it would break constraints that currently resolve against the branch
             return new BranchAliasUpdate(BranchAliasStatus::Ahead, $current);
@@ -82,7 +109,7 @@ class BranchAliasUpdater
             }
         }
 
-        return new BranchAliasUpdate(BranchAliasStatus::Updated, $current);
+        return new BranchAliasUpdate($ahead ? BranchAliasStatus::Lowered : BranchAliasStatus::Updated, $current);
     }
 
     /**

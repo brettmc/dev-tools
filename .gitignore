@@ -2,6 +2,7 @@ composer.phar
 composer.lock
 var
 vendor
+!tests/Integration/Package/Spi/_files/monorepo/vendor
 .idea/
 coverage.clover
 tests/coverage

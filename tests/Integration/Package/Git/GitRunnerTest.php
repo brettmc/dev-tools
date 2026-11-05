@@ -1,0 +1,85 @@
+<?php
+
+declare(strict_types=1);
+
+namespace OpenTelemetry\DevTools\Tests\Integration\Package\Git;
+
+use OpenTelemetry\DevTools\Package\Git\GitRunner;
+use PHPUnit\Framework\TestCase;
+use RuntimeException;
+use Symfony\Component\Process\Process;
+
+/**
+ * @covers \OpenTelemetry\DevTools\Package\Git\GitRunner
+ */
+class GitRunnerTest extends TestCase
+{
+    private string $dir;
+
+    #[\Override]
+    public function setUp(): void
+    {
+        $this->dir = sys_get_temp_dir() . '/git-runner-' . bin2hex(random_bytes(4));
+        mkdir($this->dir);
+    }
+
+    #[\Override]
+    public function tearDown(): void
+    {
+        (new Process(['rm', '-rf', $this->dir]))->mustRun();
+    }
+
+    public function test_head_is_the_checked_out_commit(): void
+    {
+        $sha = $this->commit();
+
+        $this->assertSame($sha, (new GitRunner())->head($this->dir));
+    }
+
+    public function test_head_fails_outside_a_git_checkout(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('not a git repository');
+
+        (new GitRunner())->head($this->dir);
+    }
+
+    public function test_a_clean_checkout_has_no_changes(): void
+    {
+        $this->commit();
+
+        $this->assertSame([], (new GitRunner())->changes($this->dir));
+    }
+
+    public function test_changes_to_tracked_files_are_listed(): void
+    {
+        $this->commit();
+        file_put_contents($this->dir . '/composer.json', '{"name":"changed"}');
+
+        $this->assertSame([' M composer.json'], (new GitRunner())->changes($this->dir));
+    }
+
+    public function test_untracked_files_are_not_changes(): void
+    {
+        $this->commit();
+        mkdir($this->dir . '/vendor');
+        file_put_contents($this->dir . '/vendor/autoload.php', '<?php');
+
+        $this->assertSame([], (new GitRunner())->changes($this->dir));
+    }
+
+    private function commit(): string
+    {
+        file_put_contents($this->dir . '/composer.json', '{}');
+        $this->git('init', '--quiet');
+        $this->git('add', 'composer.json');
+        $this->git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'Initial');
+
+        return trim($this->git('rev-parse', 'HEAD'));
+    }
+
+    private function git(string ...$args): string
+    {
+        return (new Process(['git', ...$args], $this->dir))->mustRun()->getOutput();
+    }
+}

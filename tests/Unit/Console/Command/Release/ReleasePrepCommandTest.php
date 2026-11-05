@@ -6,10 +6,14 @@ namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Release;
 
 use Nyholm\Psr7\Response;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrepCommand;
+use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
+use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
+use OpenTelemetry\DevTools\Package\Spi\ProviderDependency;
 use OpenTelemetry\DevTools\Tests\Unit\Behavior\UsesVfsTrait;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestInterface;
+use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 
@@ -28,6 +32,8 @@ class ReleasePrepCommandTest extends TestCase
 
     /** @var array<string, string> latest tag by downstream project, eg api => 1.10.1 */
     private array $releases = [];
+    private ProviderDependencies $dependencies;
+    private ?RuntimeException $readError = null;
     private CommandTester $tester;
 
     #[\Override]
@@ -35,6 +41,7 @@ class ReleasePrepCommandTest extends TestCase
     {
         $this->setUpVcs();
         $this->releases = ['api' => '1.10.1', 'sdk' => '1.15.0'];
+        $this->dependencies = new ProviderDependencies();
     }
 
     public function test_dry_run_reports_the_suggestion_and_writes_nothing(): void
@@ -319,6 +326,107 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringNotContainsString('Tag in this order', $this->tester->getDisplay());
     }
 
+    public function test_tag_order_follows_package_dependency_attributes(): void
+    {
+        $this->releases = ['configuration' => '0.9.0', 'exporter' => '1.4.0'];
+        $this->monorepo(['src/Config/SDK' => ['configuration', self::ADDED], 'src/Contrib/Otlp' => ['exporter', self::ADDED]]);
+        $this->composer('src/Config/SDK', 'open-telemetry/sdk-configuration', []);
+        $this->composer('src/Contrib/Otlp', 'open-telemetry/exporter-otlp', []);
+        $this->dependencies = new ProviderDependencies([
+            new ProviderDependency('Provider', 'open-telemetry/exporter-otlp', '^1.5', 'src/Config/SDK/Provider.php'),
+        ]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
+        $this->assertStringContainsString(
+            'Tag in this order: open-telemetry/exporter-otlp, open-telemetry/sdk-configuration',
+            $this->tester->getDisplay()
+        );
+    }
+
+    public function test_package_dependency_attributes_that_cannot_be_read_fail_before_prompting(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        $this->readError = new RuntimeException('vfs://root/vendor/autoload.php not found, run `composer install` in vfs://root first');
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['inputs' => ['']]));
+        $this->assertStringContainsString('composer install', $this->tester->getDisplay());
+        $this->assertStringNotContainsString('Version to release', $this->tester->getDisplay());
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_alias_moves_to_the_new_minor(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+        $this->alias('src/API', 'open-telemetry/api', '1.10.x-dev');
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertSame('1.11.x-dev', $this->branchAlias('src/API'));
+        $this->assertStringContainsString('open-telemetry/api: 1.10.x-dev -> 1.11.x-dev', $this->tester->getDisplay());
+    }
+
+    public function test_alias_that_covers_the_new_version_is_left_alone(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+        $this->alias('src/API', 'open-telemetry/api', '1.x-dev');
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertSame('1.x-dev', $this->branchAlias('src/API'));
+        $this->assertStringNotContainsString('1.x-dev ->', $this->tester->getDisplay());
+    }
+
+    public function test_alias_ahead_of_the_chosen_version_is_lowered_with_a_warning(): void
+    {
+        $this->releases = ['configuration' => '0.9.0'];
+        $this->monorepo(['src/Config/SDK' => ['configuration', self::ADDED]]);
+        $this->alias('src/Config/SDK', 'open-telemetry/sdk-configuration', '1.0.x-dev');
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--set' => ['configuration=0.10.0']], ['interactive' => false]));
+        $this->assertSame('0.10.x-dev', $this->branchAlias('src/Config/SDK'));
+        $this->assertStringContainsString('open-telemetry/sdk-configuration: 1.0.x-dev -> 0.10.x-dev, lowered', $this->tester->getDisplay());
+    }
+
+    public function test_package_skipped_at_the_prompt_keeps_its_alias(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+        $this->alias('src/API', 'open-telemetry/api', '1.10.x-dev');
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['inputs' => ['skip']]));
+        $this->assertSame('1.10.x-dev', $this->branchAlias('src/API'));
+    }
+
+    public function test_dry_run_reports_the_alias_and_replace_changes_and_writes_nothing(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+        $this->alias('src/API', 'open-telemetry/api', '1.10.x-dev');
+        $this->root(['open-telemetry/api' => '1.0.x-dev']);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
+        $this->assertSame('1.10.x-dev', $this->branchAlias('src/API'));
+        $this->assertSame(['open-telemetry/api' => '1.0.x-dev'], $this->replace());
+        $display = $this->tester->getDisplay();
+        $this->assertStringContainsString('open-telemetry/api: 1.10.x-dev -> 1.11.x-dev', $display);
+        $this->assertStringContainsString('open-telemetry/api: 1.0.x-dev -> 1.11.x-dev', $display);
+    }
+
+    public function test_root_replace_follows_the_alias_of_every_split_package(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED], 'src/SDK' => ['sdk', self::EMPTY]]);
+        $this->alias('src/API', 'open-telemetry/api', '1.10.x-dev');
+        $this->alias('src/SDK', 'open-telemetry/sdk', '1.16.x-dev');
+        $this->root([
+            'open-telemetry/api' => '1.0.x-dev',
+            'open-telemetry/sdk' => '1.0.x-dev',
+            'open-telemetry/sdk-contrib' => '1.0.x-dev',
+        ]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertSame([
+            'open-telemetry/api' => '1.11.x-dev',
+            'open-telemetry/sdk' => '1.16.x-dev',
+            'open-telemetry/sdk-contrib' => '1.0.x-dev',
+        ], $this->replace());
+    }
+
     /**
      * @param array<string, array{0: string, 1: ?string}> $packages prefix => [downstream project, changelog]
      */
@@ -348,6 +456,35 @@ class ReleasePrepCommandTest extends TestCase
         );
     }
 
+    private function alias(string $prefix, string $name, string $alias): void
+    {
+        file_put_contents(
+            $this->root->url() . "/{$prefix}/composer.json",
+            json_encode(['name' => $name, 'extra' => ['branch-alias' => ['dev-main' => $alias]]], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+        );
+    }
+
+    /**
+     * @param array<string, string> $replace
+     */
+    private function root(array $replace): void
+    {
+        file_put_contents(
+            $this->root->url() . '/composer.json',
+            json_encode(['name' => 'open-telemetry/opentelemetry', 'replace' => $replace], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+        );
+    }
+
+    private function branchAlias(string $prefix): mixed
+    {
+        return json_decode((string) file_get_contents($this->root->url() . "/{$prefix}/composer.json"), true)['extra']['branch-alias']['dev-main'] ?? null;
+    }
+
+    private function replace(): mixed
+    {
+        return json_decode((string) file_get_contents($this->root->url() . '/composer.json'), true)['replace'] ?? null;
+    }
+
     private function changelog(string $prefix): string
     {
         return (string) file_get_contents($this->root->url() . "/{$prefix}/CHANGELOG.md");
@@ -368,7 +505,11 @@ class ReleasePrepCommandTest extends TestCase
                 ? new Response(404)
                 : new Response(200, [], json_encode(['tag_name' => $tag, 'created_at' => '2026-01-01T00:00:00Z']));
         });
-        $this->tester = new CommandTester(new ReleasePrepCommand($client));
+        $reader = $this->createMock(PackageDependencyReader::class);
+        $reader->method('read')->willReturnCallback(fn (): ProviderDependencies => $this->readError !== null
+            ? throw $this->readError
+            : $this->dependencies);
+        $this->tester = new CommandTester(new ReleasePrepCommand($client, $reader));
         $inputs = $options['inputs'] ?? [];
         unset($options['inputs']);
         $inputs !== [] && $this->tester->setInputs($inputs);

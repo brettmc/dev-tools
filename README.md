@@ -30,7 +30,7 @@ You can provide the token either via the `GITHUB_TOKEN` env var (preferred), or 
 
 ```shell
 export GITHUB_TOKEN=<fine-grain-access-token>
-bin/otel release:run -[vvv] [--token=token] [--branch=main] [--dry-run] [--repo=<core|contrib>]
+bin/otel release:run -[vvv] [--token=token] [--branch=main] [--dry-run] [--repo=<core|contrib>] [--path=../opentelemetry-php]
 ```
 
 Options:
@@ -40,6 +40,20 @@ Options:
 - `--dry-run` - do not make any changes
 - `--repo=` - choose a single upstream repo to run against (default: all)
 - `--filter=` - filter repositories by prefix
+- `--path=` - a checkout of the monorepo being released, at the commit being tagged, with `composer install`
+  run. Required for core, which includes the default run of all repos. With `--repo=contrib`, it is optional
+  and points at the contrib checkout.
+
+`--path` is needed to tag core in a safe order. Core's service providers declare
+`#[PackageDependency]` on packages released in the same run, and the order those need can only be read
+from a checkout. The command fails before any GitHub call when `--path` is missing, is not a checkout of
+the repo being released, has uncommitted changes to tracked files, or has no `vendor/`. It also fails
+when the checkout's `HEAD` is not the tip of `--branch` on GitHub, so pull before releasing. With
+`--dry-run`, the git checks warn instead.
+
+The branch tip is checked again before each release. If something is merged during the run, the command
+stops before the next release, as the new commits were not checked or ordered. Run it again to release
+the rest.
 
 The script will then:
 * fetch `.gitsplit.yaml` from source repositories
@@ -48,6 +62,9 @@ The script will then:
 * find changes in upstream newer than the latest release, and their associated pull request
 * retrieve diffs from downstream between latest tag and chosen branch (eg main)
 * check that upstream changes match downstream diffs
+
+With `--path`, the packages that need each other's new versions are put in tag order, as `release:prep`
+prints it, and the order is printed. The new version of each is taken from its changelog.
 
 Once all the info has been gathered, it will iterate over each repo with unreleased changes. For each repo:
 * list the changes
@@ -67,7 +84,8 @@ no section for the version you enter, gets the list of merged pull requests inst
 ## Prepare a release
 
 `release:prep` picks the next version of each package from its `CHANGELOG.md`, and prepares the
-changelog for tagging. Run it before `release:run`, so the tag carries the dated changelog.
+checkout for tagging: the changelogs, the branch aliases and the root `replace`. Run it before
+`release:run`, so the tag carries the dated changelog.
 
 Each changelog keeps its pending changes under `## Unreleased`, in
 [Keep a Changelog](https://keepachangelog.com) sections. The sections decide the version:
@@ -90,9 +108,10 @@ Two packages take their version from a file in the checkout:
 * `open-telemetry/gen-otlp-protobuf` mirrors `proto/otel/VERSION` exactly, patch included, so proto
   `v1.11.1` is package `1.11.1`. It is released only when that is newer than the latest tag.
 
-Unlike `release:run`, this command works on a local monorepo checkout. It reads each package's
-`CHANGELOG.md` and `composer.json` there, takes the package list from `.gitsplit.yml`, and rewrites the
-changelogs. Only the latest-release lookups go over the GitHub API. Even `--dry-run` needs the checkout.
+This command works on a local monorepo checkout. It reads each package's `CHANGELOG.md` and
+`composer.json` there, takes the package list from `.gitsplit.yml`, and rewrites the files. Only the
+latest-release lookups go over the GitHub API. Even `--dry-run` needs the checkout, with
+`composer install` run, as the `#[PackageDependency]` attributes are read through its autoloader.
 
 Run it from the monorepo, where `dev-tools` is a dev dependency:
 
@@ -125,20 +144,61 @@ For each package it will:
 * print the latest version, the suggestion and the reason, then list any breaking entries
 * ask for the version (blank accepts the suggestion, `skip` skips, a typed version overrides)
 * rename `## Unreleased` to `## X.Y.Z - YYYY-MM-DD`, and add an empty `## Unreleased` above it
+* move its `dev-main` branch alias to the new version's line, eg `1.10.x-dev` to `1.11.x-dev`, unless the
+  alias already covers it (`1.x-dev` covers 1.11.0)
 
 A forced major warns when Unreleased records no breaking changes.
 
+The version is a decision, so an alias ahead of it is lowered rather than kept: sdk-configuration at
+`1.0.x-dev`, released as 0.10.0, becomes `0.10.x-dev`. A lowered alias is printed as a warning.
+
+Then it sets the root `composer.json` `replace` entry of every split package to that package's alias,
+whether or not it is released this round. Inside the monorepo, composer resolves a split package to its
+`replace` entry, so that is the version a `#[PackageDependency]` is checked against at runtime. Entries
+with no split are left alone. As with the aliases, only the values are rewritten.
+
 Packages in a monorepo depend on each other's new versions, so after the versions are chosen it also
-checks the `require` and `conflict` constraints in each package's `composer.json`:
+checks the constraints between them: `require` and `conflict` in each package's `composer.json`, and the
+`#[PackageDependency]` attributes on the service providers it registers.
 * when a package needs another's new version (sdk `^1.16` needs api `1.11`, say), it prints the order to
   tag them in
-* when a `require` excludes another package's new version, or a `conflict` matches it, it names the
-  package. This is how a forced major shows up: the dependents that need their constraint widened.
+* when a `require` or `#[PackageDependency]` excludes another package's new version, or a `conflict`
+  matches it, it names the package. This is how a forced major shows up: the dependents that need their
+  constraint widened.
 
 Only packages in the run are checked. Packages outside it, such as the contrib packages that require the
 sdk, are not.
 
+`--dry-run` reports the alias and `replace` changes too, without writing them.
+
 Then review the changes with `git diff`, open a pull request, and once it is merged run `release:run`.
+
+## Check SPI package dependencies in a monorepo
+
+[tbachert/spi](https://github.com/Nevay/spi) only loads a service provider when the packages named in its
+`#[PackageDependency]` attributes are installed at a matching version. Its
+`composer spi:show-outdated-package-dependencies` checks each constraint against the latest release on
+Packagist. In a monorepo that fails during a release: a provider that needs a split package's next
+version cannot say so until that version is tagged.
+
+`packages:spi:check` replaces it in a monorepo. For each `#[PackageDependency]` on a split package, it
+checks the constraint against the package's `dev-main` alias, which `release:prep` sets to the version
+about to be released, and against the root `replace` entry that satisfies it at runtime. A constraint the
+latest release doesn't meet is fine, as long as the alias does. Dependencies on other packages are passed
+to `composer spi:show-outdated-package-dependencies`, with the split packages ignored.
+
+```shell
+cd opentelemetry-php
+vendor/bin/otel packages:spi:check
+```
+
+Options:
+- `--path=` - path to a monorepo checkout (default: working directory)
+
+The checkout needs `composer install`: the attributes are read by a script run under its own PHP and
+autoloader. It prints a row per attribute, and exits non-zero when an alias or `replace` entry does not
+satisfy a constraint, or the outdated check fails. A provider registered in `extra.spi` that does not load
+is warned about.
 
 ## Branch aliases
 
@@ -158,7 +218,8 @@ in its own `composer.json`, which tells composer what version line the developme
 These aliases go stale as packages are released. Composer only applies a branch alias to a dev branch (a
 tagged release takes its version from the tag, and the alias committed in that tag is ignored), so the
 alias is updated **after** tagging, not before it. `release:run` will remind you when a release makes one
-stale.
+stale. `release:prep` sets the aliases of the packages it prepares, so after a prepared release there is
+usually nothing left to update.
 
 `dev-tools` is a dev dependency of both monorepos, so run the command from a monorepo checkout. It takes
 the packages to update from that checkout's own `.gitsplit.yml`, so it only ever touches the monorepo you

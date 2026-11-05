@@ -7,6 +7,7 @@ namespace OpenTelemetry\DevTools\Package\Composer;
 enum BranchAliasStatus
 {
     case Updated;
+    case Lowered;
     case Unchanged;
     case Ahead;
     case Missing;
@@ -18,6 +19,7 @@ enum BranchAliasStatus
     {
         return match ($this) {
             self::Updated => 'updated',
+            self::Lowered => 'lowered',
             self::Unchanged => 'up to date',
             self::Ahead => 'skipped, alias ahead of releases',
             self::Missing => 'no branch-alias',

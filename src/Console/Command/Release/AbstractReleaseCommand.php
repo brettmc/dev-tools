@@ -13,6 +13,7 @@ use OpenTelemetry\DevTools\Console\Release\Release;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Composer\ConfigAttributes;
 use OpenTelemetry\DevTools\Package\Composer\PackageAttributeResolver;
+use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\ResponseInterface;
 use Symfony\Component\Console\Input\InputInterface;
@@ -297,6 +298,33 @@ abstract class AbstractReleaseCommand extends BaseCommand
         $name = (string) PackageAttributeResolver::create($composerFile)->resolve(ConfigAttributes::NAME);
 
         return $this->map_gitsplit_repositories($config['splits'] ?? [], $name, $filter);
+    }
+
+    /**
+     * Print the order to tag packages that need each other's new versions, and warn about constraints
+     * the new versions break. Silent when there is nothing to say.
+     */
+    protected function print_order(ReleaseOrderReport $report): void
+    {
+        if ($report->order !== []) {
+            $this->output->writeln('');
+            $this->output->writeln('Tag in this order: ' . implode(', ', $report->order));
+        }
+        if ($report->warnings !== []) {
+            $this->output->writeln('');
+            $this->output->writeln('<comment>Check the constraints between packages:</comment>');
+            foreach ($report->warnings as $warning) {
+                $this->output->writeln("- {$warning}");
+            }
+        }
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    protected function constraints(mixed $section): array
+    {
+        return is_array($section) ? array_filter($section, 'is_string') : [];
     }
 
     /**
