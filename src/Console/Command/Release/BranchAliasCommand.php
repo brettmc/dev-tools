@@ -28,7 +28,6 @@ class BranchAliasCommand extends AbstractReleaseCommand
     private BranchAliasUpdater $updater;
     private ?ClientInterface $clientOverride;
     private string $branch;
-    private bool $dry_run;
     /** Packages this command was asked to update but could not, which makes the run a failure. */
     private int $failures = 0;
 

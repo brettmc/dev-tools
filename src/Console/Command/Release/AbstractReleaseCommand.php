@@ -28,10 +28,17 @@ abstract class AbstractReleaseCommand extends BaseCommand
         'core'    => 'open-telemetry/opentelemetry-php',
         'contrib' => 'open-telemetry/opentelemetry-php-contrib',
     ];
+    /** The root composer.json name of each monorepo, which is not named after its repository */
+    protected const ROOT_PACKAGES = [
+        'open-telemetry/opentelemetry-php' => 'open-telemetry/opentelemetry',
+        'open-telemetry/opentelemetry-php-contrib' => 'open-telemetry/opentelemetry-php-contrib',
+    ];
     protected ClientInterface $client;
     protected Parser $parser;
     protected ?string $token = null;
     protected array $sources = [];
+    protected bool $dry_run = false;
+    protected string $source_branch = 'main';
 
     #[\Override]
     protected function interact(InputInterface $input, OutputInterface $output): void
@@ -208,6 +215,46 @@ abstract class AbstractReleaseCommand extends BaseCommand
         $this->output->isVerbose() && $this->output->writeln("Found ref: {$ref->ref} SHA: {$ref->object->sha}");
 
         return $ref->object->sha;
+    }
+
+    /**
+     * The tip of the branch being released from, on GitHub. A local remote could be a fork, or
+     * named anything.
+     */
+    protected function branch_tip(string $upstream): string
+    {
+        $repository = new Repository();
+        $repository->upstream = new Project($upstream);
+
+        return $this->get_sha_for_branch($repository, $this->source_branch);
+    }
+
+    /**
+     * Report something that makes the release unsafe. A dry run warns and carries on, so it can
+     * still show what would be released.
+     *
+     * @return bool whether to stop
+     */
+    protected function problem(string $message): bool
+    {
+        if ($this->dry_run) {
+            $this->output->writeln("<comment>[DRY-RUN] {$message}</comment>");
+
+            return false;
+        }
+        $this->output->writeln("<error>{$message}</error>");
+
+        return true;
+    }
+
+    /**
+     * The name in the root composer.json of the checkout at $path, or '' when it has none.
+     */
+    protected function root_package_name(string $path): string
+    {
+        $json = json_decode((string) file_get_contents($path . '/' . self::COMPOSER_FILE), true);
+
+        return is_array($json) && is_string($json['name'] ?? null) ? $json['name'] : '';
     }
 
     /**

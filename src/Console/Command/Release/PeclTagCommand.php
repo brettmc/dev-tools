@@ -17,7 +17,6 @@ use Symfony\Component\Console\Question\Question;
 class PeclTagCommand extends AbstractReleaseCommand
 {
     private const REPOSITORY = 'open-telemetry/opentelemetry-php-instrumentation';
-    private bool $dry_run;
 
     #[\Override]
     protected function configure(): void

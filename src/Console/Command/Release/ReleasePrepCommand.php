@@ -16,6 +16,7 @@ use OpenTelemetry\DevTools\Package\Changelog\VersionSuggester;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasStatus;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasUpdater;
 use OpenTelemetry\DevTools\Package\Composer\ReplaceUpdater;
+use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
 use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
@@ -51,11 +52,12 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     private PackageDependencyReader $dependencyReader;
     private BranchAliasUpdater $aliasUpdater;
     private ReplaceUpdater $replaceUpdater;
+    private GitRunner $git;
     private int $failures = 0;
     /** heading of the list of file changes being printed */
     private ?string $changesHeading = null;
 
-    public function __construct(?ClientInterface $client = null, ?PackageDependencyReader $dependencyReader = null)
+    public function __construct(?ClientInterface $client = null, ?PackageDependencyReader $dependencyReader = null, ?GitRunner $git = null)
     {
         parent::__construct();
         //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
@@ -70,6 +72,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $this->dependencyReader = $dependencyReader ?? new PackageDependencyReader();
         $this->aliasUpdater = new BranchAliasUpdater();
         $this->replaceUpdater = new ReplaceUpdater();
+        $this->git = $git ?? new GitRunner();
     }
 
     #[\Override]
@@ -79,6 +82,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             ->setName('release:prep')
             ->setDescription('Suggest the next version of each package from its CHANGELOG.md, and prepare the changelogs for tagging')
             ->addOption('path', null, InputOption::VALUE_OPTIONAL, 'path to a monorepo checkout (default: working directory)')
+            ->addOption('branch', null, InputOption::VALUE_REQUIRED, 'upstream branch the checkout must include (default: main)')
             ->addOption('token', ['t'], InputOption::VALUE_OPTIONAL, 'github token (default: GITHUB_TOKEN, optional)')
             ->addOption('filter', null, InputOption::VALUE_OPTIONAL, 'filter by repository prefix')
             ->addOption('dry-run', null, InputOption::VALUE_NONE, 'report the suggestions without writing anything')
@@ -102,7 +106,8 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     {
         $this->registerInputAndOutput($input, $output);
         $this->token = $input->getOption('token') ?: (getenv('GITHUB_TOKEN') ?: null);
-        $dryRun = (bool) $input->getOption('dry-run');
+        $dryRun = $this->dry_run = (bool) $input->getOption('dry-run');
+        $this->source_branch = $input->getOption('branch') ?? 'main';
         $markdown = $input->getOption('format') === 'markdown';
         $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
 
@@ -139,6 +144,9 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         if (count($found) === 0) {
             $output->writeln('<error>No packages found!</error>');
 
+            return Command::FAILURE;
+        }
+        if (!$this->includes_branch_tip($path)) {
             return Command::FAILURE;
         }
         $entries = [];
@@ -214,6 +222,63 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         }
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Whether the checkout has everything on the upstream branch. A prep from a checkout behind it
+     * dates the release without the changelog entries it is missing, and they stay under the new
+     * Unreleased. Commits and uncommitted changes on top of the branch are fine: they are the prep.
+     *
+     * @return bool false when the prep should stop, having said why
+     */
+    private function includes_branch_tip(string $path): bool
+    {
+        $name = $this->root_package_name($path);
+        $upstream = array_search($name, self::ROOT_PACKAGES, true);
+        if ($upstream === false) {
+            $this->output->writeln(sprintf(
+                '<error>%s is not a checkout of %s: its composer.json is named "%s"</error>',
+                $path,
+                implode(' or ', array_keys(self::ROOT_PACKAGES)),
+                $name,
+            ));
+
+            return false;
+        }
+
+        try {
+            $tip = $this->branch_tip($upstream);
+        } catch (\Exception $e) {
+            $this->output->writeln("<error>{$e->getMessage()}</error>");
+
+            return false;
+        }
+
+        try {
+            if (!$this->git->hasCommit($path, $tip)) {
+                return !$this->problem(sprintf(
+                    '%s does not have %s %s at %s. Fetch it from %s, rebase onto it, and run release:prep again.',
+                    $path,
+                    $upstream,
+                    $this->source_branch,
+                    $tip,
+                    "https://github.com/{$upstream}",
+                ));
+            }
+            if (!$this->git->isAncestor($path, $tip, 'HEAD')) {
+                return !$this->problem(sprintf(
+                    '%s does not include %s %s at %s. Rebase onto it and run release:prep again.',
+                    $path,
+                    $upstream,
+                    $this->source_branch,
+                    $tip,
+                ));
+            }
+        } catch (RuntimeException $e) {
+            return !$this->problem("{$path} cannot be read by git: {$e->getMessage()}");
+        }
+
+        return true;
     }
 
     /**
