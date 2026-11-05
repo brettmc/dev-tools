@@ -16,7 +16,7 @@ const PACKAGE_DEPENDENCY = 'Nevay\SPI\ServiceProviderDependency\PackageDependenc
 
 $root = $argv[1] ?? null;
 if (!is_string($root) || !is_file("{$root}/composer.json")) {
-    fwrite(STDERR, "usage: {$argv[0]} <checkout with a composer.json>\n");
+    fwrite(STDERR, 'usage: ' . basename(__FILE__) . " <checkout with a composer.json>\n");
     exit(2);
 }
 $composer = json_decode((string) file_get_contents("{$root}/composer.json"), true);
