@@ -22,8 +22,8 @@ final class ChangelogReleases
      */
     public function latest(): ?string
     {
-        foreach ($this->lines() as $line) {
-            if (preg_match(self::HEADING, $line, $m) === 1) {
+        foreach ($this->lines() as [$line, $fenced]) {
+            if (!$fenced && preg_match(self::HEADING, $line, $m) === 1) {
                 return $m[1];
             }
         }
@@ -41,8 +41,8 @@ final class ChangelogReleases
         $version = ltrim($version, 'v');
         $body = [];
         $inSection = false;
-        foreach ($this->lines() as $line) {
-            if (str_starts_with($line, '## ')) {
+        foreach ($this->lines() as [$line, $fenced]) {
+            if (!$fenced && str_starts_with($line, '## ')) {
                 if ($inSection) {
                     break;
                 }
@@ -50,7 +50,7 @@ final class ChangelogReleases
 
                 continue;
             }
-            if ($inSection && preg_match(self::DEFINITION, $line) !== 1) {
+            if ($inSection && ($fenced || preg_match(self::DEFINITION, $line) !== 1)) {
                 $body[] = $line;
             }
         }
@@ -69,8 +69,8 @@ final class ChangelogReleases
     private function definitionsUsedBy(string $text): array
     {
         $used = [];
-        foreach ($this->lines() as $line) {
-            if (preg_match(self::DEFINITION, $line, $m) === 1 && str_contains($text, "[{$m[1]}]")) {
+        foreach ($this->lines() as [$line, $fenced]) {
+            if (!$fenced && preg_match(self::DEFINITION, $line, $m) === 1 && str_contains($text, "[{$m[1]}]")) {
                 $used[] = rtrim($line);
             }
         }
@@ -79,10 +79,16 @@ final class ChangelogReleases
     }
 
     /**
-     * @return list<string>
+     * @return list<array{string, bool}> each line, and whether it is part of a code block
      */
     private function lines(): array
     {
-        return preg_split('/\R/', $this->markdown) ?: [];
+        $fences = new CodeFences();
+        $lines = [];
+        foreach (preg_split('/\R/', $this->markdown) ?: [] as $index => $line) {
+            $lines[] = [$line, $fences->read($line, $index + 1)];
+        }
+
+        return $lines;
     }
 }

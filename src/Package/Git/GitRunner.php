@@ -140,6 +140,45 @@ class GitRunner
     }
 
     /**
+     * The files that differ between $revisions, as `git diff --name-only` lists them. One revision
+     * compares it with the working tree, so uncommitted changes to tracked files are included.
+     *
+     * @param list<string> $revisions
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout or a
+     *         revision is not in it
+     * @return list<string>
+     */
+    public function changedFiles(string $path, array $revisions): array
+    {
+        //revisions come from the command line, so --end-of-options stops one being read as an option
+        $diff = $this->run($path, ['diff', '--name-only', '-z', '--no-renames', '--end-of-options', ...$revisions, '--']);
+
+        return array_values(array_filter(explode("\0", $diff), static fn (string $file): bool => $file !== ''));
+    }
+
+    /**
+     * Every untracked file that is not ignored.
+     *
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout
+     * @return list<string>
+     */
+    public function untrackedFiles(string $path): array
+    {
+        $files = $this->run($path, ['ls-files', '-z', '--others', '--exclude-standard']);
+
+        return array_values(array_filter(explode("\0", $files), static fn (string $file): bool => $file !== ''));
+    }
+
+    /**
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout or either
+     *         ref is not in it
+     */
+    public function mergeBase(string $path, string $a, string $b): string
+    {
+        return trim($this->run($path, ['merge-base', '--end-of-options', $a, $b]));
+    }
+
+    /**
      * Run a git command that answers yes or no by exiting 0 or 1. Any other exit is an error.
      *
      * @param list<string> $args

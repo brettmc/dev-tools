@@ -20,10 +20,12 @@ final class MonorepoCheckout
     /**
      * @param array<string, ?string> $aliases `dev-main` alias by package name, in .gitsplit.yml order
      * @param array<string, string> $replace
+     * @param list<string> $prefixes every split's directory, in .gitsplit.yml order
      */
     private function __construct(
         public readonly array $aliases,
         public readonly array $replace,
+        public readonly array $prefixes,
     ) {
     }
 
@@ -37,7 +39,12 @@ final class MonorepoCheckout
         $config = Yaml::parse((string) file_get_contents($gitsplitFile));
 
         $aliases = [];
+        $prefixes = [];
         foreach ($config['splits'] ?? [] as $split) {
+            if (!is_string($split['prefix'] ?? null)) {
+                continue;
+            }
+            $prefixes[] = trim($split['prefix'], '/');
             $composer = self::json("{$path}/{$split['prefix']}/" . self::COMPOSER_FILE);
             if (!is_string($composer['name'] ?? null)) {
                 continue;
@@ -47,7 +54,7 @@ final class MonorepoCheckout
         }
         $replace = self::json($rootFile)['replace'] ?? [];
 
-        return new self($aliases, is_array($replace) ? array_filter($replace, 'is_string') : []);
+        return new self($aliases, is_array($replace) ? array_filter($replace, 'is_string') : [], $prefixes);
     }
 
     private static function json(string $file): array

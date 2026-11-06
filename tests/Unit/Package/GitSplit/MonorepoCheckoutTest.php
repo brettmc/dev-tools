@@ -48,6 +48,17 @@ class MonorepoCheckoutTest extends TestCase
         $this->assertSame(['open-telemetry/api' => '1.11.x-dev'], MonorepoCheckout::read($this->root->url())->aliases);
     }
 
+    public function test_prefixes_are_listed_in_gitsplit_order_without_slashes(): void
+    {
+        $this->checkout(['src/SDK' => ['open-telemetry/sdk', null]], []);
+        file_put_contents(
+            $this->root->url() . '/.gitsplit.yml',
+            "splits:\n  - prefix: \"src/SDK/\"\n    target: \"x\"\n  - prefix: \"src/API\"\n    target: \"y\"\n  - target: \"z\"\n"
+        );
+
+        $this->assertSame(['src/SDK', 'src/API'], MonorepoCheckout::read($this->root->url())->prefixes);
+    }
+
     public function test_a_path_that_is_not_a_monorepo_is_refused(): void
     {
         $this->expectException(\RuntimeException::class);

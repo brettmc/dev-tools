@@ -183,8 +183,13 @@ Each changelog keeps its pending changes under `## Unreleased`, in
 | `Breaking changes` or `Removed` | Minor, and the entries are listed as warnings |
 
 A major is never suggested. Some breaking changes ship in 1.x minors, so the maintainer decides. Force
-one with `--set`, or type it at the prompt. A heading under Unreleased that is not one of the sections
-above is an error.
+one with `--set`, or type it at the prompt.
+
+Under Unreleased, each entry is a `- ` bullet under one of the `###` sections above. An entry may wrap
+onto indented lines, and hold nested `- ` bullets and fenced code blocks. Anything else there is an
+error naming its line, rather than being left out of the release: an unknown heading, a `*` bullet, an
+entry before the first section, a paragraph, or a second `## Unreleased`. `changelog:check` reports the
+same errors when the pull request is opened.
 
 Two packages take their version from a file in the checkout:
 * `open-telemetry/sem-conv` takes the version the generator wrote to
@@ -306,6 +311,46 @@ vendor/bin/otel release:prep -n --dry-run --format=json | jq '[.packages[].warni
 ```
 
 Then review the changes with `git diff`, open a pull request, and once it is merged run `release:run`.
+
+## Check changelogs in a pull request
+
+`changelog:check` checks that each split package a pull request changes has an entry in its
+`CHANGELOG.md`, and that `release:prep` can read every changelog it changes. The packages come from
+`.gitsplit.yml`. It reads only the checkout, so it needs no token.
+
+For each package with changed files it prints one status:
+
+| Status | Fails |
+|---|---|
+| `changed, CHANGELOG.md updated` | no |
+| `changed, CHANGELOG.md not updated` | yes |
+| `changed, has no CHANGELOG.md` | no |
+| `CHANGELOG.md updated` | no |
+| `Markdown only, no entry needed` | no |
+
+Then it parses each changed `CHANGELOG.md` with the `release:prep` rules above, and fails on an error,
+naming the file and line. Under GitHub Actions (`GITHUB_ACTIONS` set), each failure is also printed as
+an `::error` workflow command, which marks the file in the pull request.
+
+Arguments are revisions for `git diff`. A pull request workflow checks out its merge commit with
+`fetch-depth: 2`, and compares it with its first parent, the base branch:
+
+```shell
+vendor/bin/otel changelog:check HEAD^1 HEAD
+```
+
+Without arguments it checks everything since the merge base with `origin/main`, including uncommitted
+and untracked files, and parses every changelog. Run that before pushing:
+
+```shell
+vendor/bin/otel changelog:check
+```
+
+A change that doesn't affect users needs no entry. Skip the check by adding the `skip-changelog` label
+to the pull request, which the workflow tests in its `if:`.
+
+Options:
+- `--path=` - path to a monorepo checkout (default: working directory)
 
 ## Check SPI package dependencies in a monorepo
 

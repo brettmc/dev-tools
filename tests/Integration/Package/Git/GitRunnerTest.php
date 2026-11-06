@@ -190,6 +190,67 @@ class GitRunnerTest extends TestCase
         $this->assertSame([$sha], array_column((new GitRunner())->log($this->dir, 'HEAD', 'src/API/', null), 'sha'));
     }
 
+    public function test_changed_files_are_listed_for_a_range(): void
+    {
+        $first = $this->commit();
+        $this->commitFile('src/API/a b.php', 'Add a', '2026-01-01T00:00:00Z');
+        $this->commitFile('src/SDK/b.php', 'Add b', '2026-01-02T00:00:00Z');
+
+        $this->assertSame(['src/API/a b.php', 'src/SDK/b.php'], (new GitRunner())->changedFiles($this->dir, [$first, 'HEAD']));
+        $this->assertSame(['src/SDK/b.php'], (new GitRunner())->changedFiles($this->dir, ['HEAD^1', 'HEAD']));
+    }
+
+    public function test_changed_files_since_one_commit_include_uncommitted_changes(): void
+    {
+        $this->commit();
+        file_put_contents($this->dir . '/composer.json', '{"name":"changed"}');
+
+        $this->assertSame(['composer.json'], (new GitRunner())->changedFiles($this->dir, ['HEAD']));
+    }
+
+    public function test_changed_files_take_revisions_not_options_or_paths(): void
+    {
+        $this->commit();
+        $this->commit('Second');
+
+        $this->expectException(RuntimeException::class);
+
+        (new GitRunner())->changedFiles($this->dir, ['--output=' . $this->dir . '/written']);
+    }
+
+    public function test_untracked_files_are_listed_unquoted_without_ignored_ones(): void
+    {
+        $this->commit();
+        file_put_contents($this->dir . '/.gitignore', "vendor/\n");
+        mkdir($this->dir . '/vendor');
+        file_put_contents($this->dir . '/vendor/autoload.php', '<?php');
+        mkdir($this->dir . '/src/API', 0o777, true);
+        file_put_contents($this->dir . '/src/API/a "b".php', '<?php');
+
+        $this->assertSame(['.gitignore', 'src/API/a "b".php'], (new GitRunner())->untrackedFiles($this->dir));
+    }
+
+    public function test_merge_base_is_the_common_ancestor(): void
+    {
+        $base = $this->commit();
+        $this->git('checkout', '--quiet', '-b', 'other');
+        $this->commit('Other');
+        $this->git('checkout', '--quiet', '-');
+        $this->commit('Second');
+
+        $this->assertSame($base, (new GitRunner())->mergeBase($this->dir, 'other', 'HEAD'));
+    }
+
+    public function test_merge_base_fails_for_an_unknown_ref(): void
+    {
+        $this->commit();
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('origin/main');
+
+        (new GitRunner())->mergeBase($this->dir, 'origin/main', 'HEAD');
+    }
+
     public function test_log_fails_for_a_commit_not_in_the_repository(): void
     {
         $this->commit();

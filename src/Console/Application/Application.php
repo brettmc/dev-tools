@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Application;
 
+use OpenTelemetry\DevTools\Console\Command\Changelog\ChangelogCheckCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\SpiCheckCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\ValidateInstallationCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\ValidatePackagesCommand;
@@ -48,6 +49,7 @@ class Application extends BaseApplication
             new BranchAliasCommand(),
             new ReleasePrepCommand(),
             new SpiCheckCommand(),
+            new ChangelogCheckCommand(),
         ]);
     }
 }

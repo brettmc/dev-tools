@@ -8,6 +8,7 @@ use Composer\Semver\VersionParser;
 use InvalidArgumentException;
 use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\PrepEntry;
+use OpenTelemetry\DevTools\Package\Changelog\ChangelogException;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogParser;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogRewriter;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogSection;
@@ -507,7 +508,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
         try {
             $entry->changes = $this->changelogParser->parseUnreleased((string) file_get_contents($file));
-        } catch (InvalidArgumentException $e) {
+        } catch (ChangelogException $e) {
             $this->output->writeln("<error>[{$entry->label()}] {$prefix}/" . self::CHANGELOG_FILE . ": {$e->getMessage()}</error>");
             $this->failures++;
             $entry->reason = 'error, ' . $e->getMessage();
@@ -648,7 +649,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
         try {
             $updated = $this->rewriter->release((string) file_get_contents($file), (string) $entry->version, $date);
-        } catch (InvalidArgumentException $e) {
+        } catch (ChangelogException $e) {
             $this->output->writeln("<error>[{$entry->label()}] {$e->getMessage()}</error>");
             $this->failures++;
 
