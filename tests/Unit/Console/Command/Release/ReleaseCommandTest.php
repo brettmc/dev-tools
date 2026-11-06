@@ -64,6 +64,8 @@ class ReleaseCommandTest extends TestCase
     private ?string $logError = null;
     /** whether the monorepo has commits to each package since its latest release */
     private bool $upstreamCommits = true;
+    /** @var list<array{sha: string, author: string, message: string}> the commits to each package, when it has some */
+    private array $log = [['sha' => 'abc', 'author' => 'Octo Cat', 'message' => 'Add attributes']];
     /** @var array<string, int> status of the release request by project, 201 when unset */
     private array $releaseStatus = [];
     /** project whose release request fails in transport */
@@ -134,6 +136,8 @@ class ReleaseCommandTest extends TestCase
 
     public function test_a_release_off_another_branch_is_tagged_at_the_prompt(): void
     {
+        $this->changelog = self::section('1.44.1');
+
         $status = $this->run_release("1.44.1\nn\nn\n", ['--branch' => '1.x']);
 
         $this->assertSame(0, $status);
@@ -696,23 +700,95 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame('1.45.0', $this->created()['tag_name']);
     }
 
-    public function test_pull_requests_are_listed_when_the_changelog_has_no_section_for_the_version(): void
+    public function test_no_pull_requests_are_looked_up(): void
     {
-        $this->run_release("1.46.0\n\n\n");
+        $this->run_release("\n\n\n");
 
-        $this->assertSame('1.46.0', $this->created()['tag_name']);
-        $this->assertStringContainsString("What's Changed", $this->created()['body']);
-        $this->assertStringContainsString('Add attributes by @octocat', $this->created()['body']);
-        $this->assertStringContainsString('no section for 1.46.0', $this->output());
+        $this->assertSame([], preg_grep('#/pulls#', array_column($this->requests, 'url')));
     }
 
-    public function test_pull_requests_are_listed_when_the_package_has_no_changelog(): void
+    public function test_unreleased_commits_are_listed_by_subject_and_author(): void
+    {
+        $this->log = [['sha' => 'abc', 'author' => 'Octo Cat', 'message' => "Add attributes (#7)\n\nWith a body."]];
+        $this->splitMessages = ["Add attributes (#7)\n\nWith a body."];
+
+        $this->run_release("\n\n\n");
+
+        $this->assertStringContainsString('* Add attributes (#7) (Octo Cat)', $this->output());
+        $this->assertStringNotContainsString('With a body.', $this->output());
+    }
+
+    public function test_commit_without_a_pull_request_is_released(): void
+    {
+        //an advisory is merged from a private fork, with no pull request in the repository
+        $this->log = [['sha' => 'def', 'author' => 'Octo Cat', 'message' => 'Merge commit from fork']];
+        $this->splitMessages = ['Merge commit from fork'];
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(0, $status);
+        $this->assertSame('1.45.0', $this->created()['tag_name']);
+        $this->assertStringContainsString('* Merge commit from fork (Octo Cat)', $this->output());
+    }
+
+    public function test_version_without_a_changelog_section_stops_the_run(): void
+    {
+        $status = $this->run_release("1.46.0\n\n\n");
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('CHANGELOG.md has no section for 1.46.0', $this->output());
+    }
+
+    public function test_dry_run_warns_about_a_version_without_a_changelog_section(): void
+    {
+        $status = $this->run_release("1.46.0\n\n\n", ['--dry-run' => true]);
+
+        $this->assertSame(0, $status);
+        $this->assertStringContainsString('[DRY-RUN] opentelemetry-php/sem-conv CHANGELOG.md has no section for 1.46.0', $this->output());
+    }
+
+    public function test_package_without_a_changelog_stops_the_run_before_tagging(): void
     {
         $this->changelog = null;
 
-        $this->run_release("1.45.0\n\n\n");
+        $status = $this->run_release("1.45.0\n\n\n");
 
-        $this->assertStringContainsString("What's Changed", $this->created()['body']);
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('src/SemConv has no CHANGELOG.md', $this->output());
+    }
+
+    public function test_package_without_a_changelog_stops_the_run_without_interaction(): void
+    {
+        $this->changelog = null;
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('src/SemConv has no CHANGELOG.md', $this->output());
+    }
+
+    public function test_dry_run_warns_about_a_package_without_a_changelog(): void
+    {
+        $this->changelog = null;
+
+        $status = $this->run_release("1.45.0\n\n\n", ['--dry-run' => true]);
+
+        $this->assertSame(0, $status);
+        $this->assertStringContainsString('[DRY-RUN] opentelemetry-php/sem-conv has unreleased changes, but src/SemConv has no CHANGELOG.md', $this->output());
+    }
+
+    public function test_package_without_changes_does_not_need_a_changelog(): void
+    {
+        $this->changelog = null;
+        $this->upstreamCommits = false;
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(0, $status);
+        $this->assertStringNotContainsString('CHANGELOG.md', $this->output());
     }
 
     public function test_blank_answer_skips_when_the_changelog_is_not_newer_than_the_latest_release(): void
@@ -1084,7 +1160,7 @@ class ReleaseCommandTest extends TestCase
                 throw new RuntimeException($this->logError);
             }
 
-            return $this->upstreamCommits ? [['sha' => 'abc', 'author' => 'Octo Cat', 'message' => 'Add attributes']] : [];
+            return $this->upstreamCommits ? $this->log : [];
         });
         $git->method('tree')->willReturnCallback(function (string $path, string $sha, string $prefix): string {
             $this->treeReads[] = [$sha, $prefix];
@@ -1150,8 +1226,6 @@ class ReleaseCommandTest extends TestCase
             }
         }
 
-        return match (true) {
-            str_contains($url, '/commits/abc/pulls') => $json([['user' => ['login' => 'octocat'], 'html_url' => 'https://github.com/o/r/pull/7', 'number' => 7, 'title' => 'Add attributes']]),            default => new Response(404),
-        };
+        return new Response(404);
     }
 }

@@ -92,7 +92,7 @@ The script will then:
 * read `.gitsplit.yml` from the checkout
 * process yaml to determine downstream (read-only) repositories and their path association in upstream (eg open-telemetry/opentelemetry-php:/src/API -> opentelemetry-php/api)
 * find latest release in downstream
-* find the commits to the package's directory in the checkout newer than the latest release, up to the commit being released, and their associated pull request
+* find the commits to the package's directory in the checkout newer than the latest release, up to the commit being released
 * retrieve diffs from downstream between latest tag and the split commit
 * check that upstream changes match downstream diffs
 
@@ -111,8 +111,9 @@ The default version is the newest dated section (`## 1.45.0 - 2026-11-03`) of th
 the checkout, when it is newer than the latest release. That is the section `release:prep` writes,
 so merge the `release:prep` pull request before running `release:run`.
 
-The release notes are the body of that section, followed by a compare link. A package with no `CHANGELOG.md`, or
-no section for the version you enter, gets the list of merged pull requests instead.
+The release notes are the body of that section, followed by a compare link. A package with unreleased changes
+must have a `CHANGELOG.md`, and it must have a section for the version you enter. Otherwise the run stops, or
+warns with `--dry-run`.
 
 #### Release without asking
 
@@ -122,6 +123,7 @@ With `--no-interaction`, as in CI, nothing is asked and nothing unexpected is le
   and not as a draft
 * a package with changes but no dated section newer than its latest release is skipped, and named,
   before its split is checked
+* a package with changes but no `CHANGELOG.md` stops the run before anything is tagged
 * commits in a split that are not upstream stop the run before anything is tagged, as does a failed
   compare with the split
 * a failed release request stops the run, as later packages may need that one

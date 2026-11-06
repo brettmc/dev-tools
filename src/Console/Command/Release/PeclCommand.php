@@ -80,7 +80,7 @@ class PeclCommand extends AbstractReleaseCommand
 
             return Command::FAILURE;
         }
-        $repository->commits = $this->commits($repository, $log);
+        $repository->commits = $this->commits($log);
         if (count($repository->commits) === 0) {
             $this->output->writeln("<info>No unreleased commits since {$repository->latestRelease->version}</info>");
             if (!$force) {
@@ -104,7 +104,7 @@ class PeclCommand extends AbstractReleaseCommand
         $this->output->writeln("<info>Last release {$repository->latestRelease->version} @ {$repository->latestRelease->timestamp}</info>");
         $this->output->writeln("<info>[{$repository->downstream}]</info> {$cnt} unreleased change(s):");
         foreach ($repository->commits as $commit) {
-            $this->output->writeln("<comment>* [#{$commit->pullRequest->id}] {$commit->pullRequest->title} ({$commit->pullRequest->author})</comment>");
+            $this->output->writeln("<comment>* {$commit->subject} ({$commit->author})</comment>");
         }
         $prev = ($repository->latestRelease === null)
             ? '-nothing-'

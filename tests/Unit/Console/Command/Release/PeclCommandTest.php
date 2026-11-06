@@ -60,7 +60,6 @@ class PeclCommandTest extends TestCase
 
             return match (true) {
                 str_ends_with($url, '/releases/latest') => $json(['tag_name' => '1.2.0', 'created_at' => '2026-01-01T00:00:00Z']),
-                str_contains($url, '/commits/abc/pulls') => $json([['user' => ['login' => 'octocat'], 'html_url' => 'https://github.com/o/r/pull/7', 'number' => 7, 'title' => 'Fix hooks']]),
                 default => new Response(404),
             };
         });
@@ -83,20 +82,22 @@ class PeclCommandTest extends TestCase
 
         $this->assertSame(Command::SUCCESS, $status);
         $this->assertSame([['HEAD', '.', '2026-01-01T00:00:01Z']], $this->logReads);
-        $this->assertSame([], preg_grep('#raw\.githubusercontent\.com|/commits\?#', $this->urls));
+        $this->assertSame([], preg_grep('#raw\.githubusercontent\.com|/commits\?|/pulls#', $this->urls));
         $this->assertStringContainsString('<release>1.3.0</release>', $this->tester->getDisplay());
         $this->assertStringContainsString('releases/tag/1.3.0', $this->tester->getDisplay());
         $this->assertStringContainsString('<release>1.2.0</release>', $this->tester->getDisplay());
     }
 
-    public function test_unreleased_commits_are_listed(): void
+    public function test_unreleased_commits_are_listed_by_subject_and_author(): void
     {
+        $this->log = [['sha' => 'abc', 'author' => 'Octo Cat', 'message' => "Fix hooks (#7)\n\nWith a body."]];
         $this->tester->setInputs(['', '']);
 
         $this->tester->execute(['--path' => $this->root->url()]);
 
         $this->assertStringContainsString('1 unreleased change(s)', $this->tester->getDisplay());
-        $this->assertStringContainsString('[#7] Fix hooks (octocat)', $this->tester->getDisplay());
+        $this->assertStringContainsString('* Fix hooks (#7) (Octo Cat)', $this->tester->getDisplay());
+        $this->assertStringNotContainsString('With a body.', $this->tester->getDisplay());
     }
 
     public function test_no_unreleased_commits_stops_without_force(): void

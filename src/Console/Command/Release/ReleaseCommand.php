@@ -244,7 +244,7 @@ class ReleaseCommand extends AbstractReleaseCommand
      * For a given repository, populate:
      * 1. latest release
      * 2. unreleased commits to upstream path, since date of last release, up to the commit released
-     * 3. its changelog in the checkout
+     * 3. its changelog in the checkout, which a package with changes must have
      *
      * @return bool false when the run should stop, having said why
      */
@@ -258,9 +258,12 @@ class ReleaseCommand extends AbstractReleaseCommand
             return false;
         }
         $repository->commits = $commits;
-        $this->changelogs[(string) $repository->downstream] = $this->read_changelog($repository);
+        $changelog = $this->read_changelog($repository);
+        $this->changelogs[(string) $repository->downstream] = $changelog;
 
-        return true;
+        return $changelog !== null
+            || $commits === []
+            || !$this->problem("{$repository->downstream} has unreleased changes, but {$repository->upstream->path} has no CHANGELOG.md");
     }
 
     /**
@@ -281,7 +284,7 @@ class ReleaseCommand extends AbstractReleaseCommand
             return $this->problem("The commits to {$repository->upstream->path} of {$this->sha} cannot be read by git: {$e->getMessage()}") ? null : [];
         }
 
-        return $this->commits($repository, $log);
+        return $this->commits($log);
     }
 
     /**
@@ -612,7 +615,6 @@ class ReleaseCommand extends AbstractReleaseCommand
 
         foreach ($data->commits as $c) {
             $commit = new Commit();
-            $commit->sha = $c->sha;
             $commit->message = $c->commit->message;
             $diff->commits[] = $commit;
         }
@@ -651,7 +653,7 @@ class ReleaseCommand extends AbstractReleaseCommand
         $cnt = count($repository->commits);
         $this->output->writeln("<info>[{$repository->downstream}]</info> {$cnt} unreleased change(s):");
         foreach ($repository->commits as $commit) {
-            $this->output->writeln("<comment>* {$commit->pullRequest->title} ({$commit->pullRequest->author})</comment>");
+            $this->output->writeln("<comment>* {$commit->subject} ({$commit->author})</comment>");
         }
 
         $prev = ($repository->latestRelease === null)
@@ -687,14 +689,13 @@ class ReleaseCommand extends AbstractReleaseCommand
         }
         $release->version = $newVersion;
         $fromChangelog = $changelog?->notes($newVersion);
-        if ($changelog !== null && $fromChangelog === null) {
-            $this->output->writeln("<comment>[{$repository->downstream}] CHANGELOG.md has no section for {$newVersion}, listing pull requests instead</comment>");
+        if ($fromChangelog === null && $this->problem("{$repository->downstream} CHANGELOG.md has no section for {$newVersion}")) {
+            return false;
         }
         $release->notes = (new ReleaseNotes())->build(
             (string) $repository->downstream,
             $repository->latestRelease?->version,
             $newVersion,
-            $repository->commits,
             $fromChangelog,
         );
 
