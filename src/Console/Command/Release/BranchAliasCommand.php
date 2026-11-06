@@ -57,7 +57,7 @@ class BranchAliasCommand extends AbstractReleaseCommand
     #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $this->token = $input->getOption('token');
+        $this->token = $this->token($input);
         $this->branch = $input->getOption('branch') ?? 'main';
         $this->dry_run = $input->getOption('dry-run');
         $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');

@@ -165,6 +165,27 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertSame(self::FIXED, $this->changelog('src/API'));
     }
 
+    public function test_set_skip_leaves_the_changelog_and_alias_alone_and_reports_it(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED], 'src/SDK' => ['sdk', self::FIXED]]);
+        $this->alias('src/SDK', 'open-telemetry/sdk', '1.15.x-dev');
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--set' => ['sdk=skip']], ['interactive' => false]));
+        $this->assertSame('1.15.x-dev', $this->branchAlias('src/SDK'));
+        $this->assertStringNotContainsString('## 1.15.1', $this->changelog('src/SDK'));
+        $this->assertStringContainsString('## 1.10.2 - 2026-11-03', $this->changelog('src/API'));
+        $this->assertMatchesRegularExpression('/sdk\s*\|\s*1\.15\.0\s*\|\s*\|\s*skipped by --set/', $this->tester->getDisplay());
+    }
+
+    public function test_set_skip_is_not_asked_about(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--set' => ['api=skip']], ['inputs' => []]));
+        $this->assertStringNotContainsString('Version to release', $this->tester->getDisplay());
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
     public function test_set_for_an_unknown_package_fails(): void
     {
         $this->monorepo(['src/API' => ['api', self::FIXED]]);
@@ -297,6 +318,60 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('| Package               | Latest | Suggested | Reason                    |', $display);
         $this->assertStringContainsString('| opentelemetry-php/api | 1.10.1 | 1.11.0    | breaking changes recorded |', $display);
         $this->assertStringContainsString('- Dropped X.', $display);
+    }
+
+    public function test_json_format_prints_the_packages_and_order_on_stdout(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED], 'src/SDK' => ['sdk', self::BREAKING], 'src/Context' => ['context', self::EMPTY]]);
+        $this->composer('src/API', 'open-telemetry/api', []);
+        $this->composer('src/SDK', 'open-telemetry/sdk', ['open-telemetry/api' => '^1.11']);
+        $this->releases['context'] = '1.4.0';
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'json'], ['capture_stderr_separately' => true]));
+
+        $this->assertSame([
+            'packages' => [
+                ['package' => 'open-telemetry/api', 'repository' => 'opentelemetry-php/api', 'latest' => '1.10.1', 'version' => '1.11.0', 'reason' => 'new features', 'warnings' => []],
+                ['package' => 'open-telemetry/sdk', 'repository' => 'opentelemetry-php/sdk', 'latest' => '1.15.0', 'version' => '1.16.0', 'reason' => 'breaking changes recorded', 'warnings' => ['Dropped X.']],
+                ['package' => 'open-telemetry/context', 'repository' => 'opentelemetry-php/context', 'latest' => '1.4.0', 'version' => null, 'reason' => 'no unreleased changes', 'warnings' => []],
+            ],
+            'order' => ['open-telemetry/api', 'open-telemetry/sdk'],
+            'constraint_warnings' => [],
+            'release' => true,
+        ], json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR));
+        $this->assertStringContainsString('[DRY-RUN] no files were changed', $this->tester->getErrorOutput());
+    }
+
+    public function test_json_format_with_nothing_to_release(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::EMPTY]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--format' => 'json'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $json = json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertFalse($json['release']);
+        $this->assertNull($json['packages'][0]['version']);
+        $this->assertStringContainsString('Nothing to release.', $this->tester->getErrorOutput());
+    }
+
+    public function test_json_format_reports_the_versions_chosen(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED], 'src/SDK' => ['sdk', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--format' => 'json', '--set' => ['sdk=skip', 'api=1.11.0']], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $json = json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(['1.11.0', null], array_column($json['packages'], 'version'));
+        $this->assertSame(['set by --set', 'skipped by --set'], array_column($json['packages'], 'reason'));
+        $this->assertTrue($json['release']);
+    }
+
+    public function test_unknown_format_fails(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'yaml'], ['interactive' => false]));
+        $this->assertStringContainsString('--format must be text, markdown or json', $this->tester->getDisplay());
     }
 
     public function test_nested_bullets_in_a_warning_stay_nested(): void

@@ -17,7 +17,6 @@ use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\ResponseInterface;
 use Symfony\Component\Console\Input\InputInterface;
-use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Yaml\Parser;
 
 abstract class AbstractReleaseCommand extends BaseCommand
@@ -40,18 +39,13 @@ abstract class AbstractReleaseCommand extends BaseCommand
     protected bool $dry_run = false;
     protected string $source_branch = 'main';
 
-    #[\Override]
-    protected function interact(InputInterface $input, OutputInterface $output): void
+    /**
+     * The token from --token, or else GITHUB_TOKEN. Read in execute(), as interact() is skipped
+     * without interaction.
+     */
+    protected function token(InputInterface $input): ?string
     {
-        if (!$input->getOption('token')) {
-            $token = getenv('GITHUB_TOKEN');
-            if ($token !== false) {
-                $input->setOption('token', $token);
-            }
-        }
-        if (!$input->getOption('token')) {
-            throw new \RuntimeException('No github token provided (via --token or GITHUB_TOKEN env)');
-        }
+        return $input->getOption('token') ?: (getenv('GITHUB_TOKEN') ?: null);
     }
 
     protected function headers(): array
@@ -128,7 +122,7 @@ abstract class AbstractReleaseCommand extends BaseCommand
      * already-released commit. This happens with lightweight tags, where the tag's timestamp is the
      * timestamp of the commit it points at.
      */
-    private function since(Release $release): string
+    protected function since(Release $release): string
     {
         return (new \DateTimeImmutable($release->timestamp))
             ->setTimezone(new \DateTimeZone('UTC'))
@@ -137,15 +131,18 @@ abstract class AbstractReleaseCommand extends BaseCommand
     }
 
     /**
-     * @param Repository $repository
+     * @param ?string $sha the commit to list back from, rather than the default branch
      * @return array<Commit>
      */
-    protected function get_upstream_unreleased_commits(Repository $repository): array
+    protected function get_upstream_unreleased_commits(Repository $repository, ?string $sha = null): array
     {
         $commits_url = "https://api.github.com/repos/{$repository->upstream}/commits?path={$repository->upstream->path}";
         $latestRelease = $repository->latestRelease;
         if ($latestRelease !== null) {
             $commits_url .= '&since=' . $this->since($latestRelease);
+        }
+        if ($sha !== null) {
+            $commits_url .= "&sha={$sha}";
         }
 
         return $this->get_commits($commits_url, $repository);
@@ -323,9 +320,11 @@ abstract class AbstractReleaseCommand extends BaseCommand
      * composer.json of a monorepo is not named after its repository (core is
      * `open-telemetry/opentelemetry`), so the presence of split config is what identifies it.
      *
+     * @param ?string $upstream the repository the splits are made from, when known; otherwise the
+     *        root package name stands in for it
      * @return array<Repository>|null null when $path is not a monorepo checkout
      */
-    protected function find_split_packages(string $path, ?string $filter): ?array
+    protected function find_split_packages(string $path, ?string $filter, ?string $upstream = null): ?array
     {
         $gitsplitFile = $path . '/' . self::GITSPLIT_FILE;
         $composerFile = $path . '/' . self::COMPOSER_FILE;
@@ -342,7 +341,7 @@ abstract class AbstractReleaseCommand extends BaseCommand
             return null;
         }
         $config = $this->parser->parse((string) file_get_contents($gitsplitFile));
-        $name = (string) PackageAttributeResolver::create($composerFile)->resolve(ConfigAttributes::NAME);
+        $name = $upstream ?? (string) PackageAttributeResolver::create($composerFile)->resolve(ConfigAttributes::NAME);
 
         return $this->map_gitsplit_repositories($config['splits'] ?? [], $name, $filter);
     }

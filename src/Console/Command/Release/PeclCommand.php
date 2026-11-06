@@ -35,12 +35,6 @@ class PeclCommand extends AbstractReleaseCommand
     }
 
     #[\Override]
-    protected function interact(InputInterface $input, OutputInterface $output): void
-    {
-        //no-op
-    }
-
-    #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $force = $input->getOption('force');

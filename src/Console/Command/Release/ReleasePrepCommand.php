@@ -20,6 +20,7 @@ use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
 use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
+use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use Psr\Http\Client\ClientInterface;
 use RuntimeException;
@@ -27,6 +28,7 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Yaml\Parser;
 
@@ -39,6 +41,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 {
     private const CHANGELOG_FILE = 'CHANGELOG.md';
     private const VERSION_PATTERN = '/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/';
+    private const SKIP = 'skip';
 
     private const BRANCH_KEY = 'dev-main';
 
@@ -87,39 +90,37 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             ->addOption('filter', null, InputOption::VALUE_OPTIONAL, 'filter by repository prefix')
             ->addOption('dry-run', null, InputOption::VALUE_NONE, 'report the suggestions without writing anything')
             ->addOption('date', null, InputOption::VALUE_OPTIONAL, 'release date, YYYY-MM-DD (default: today)')
-            ->addOption('set', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'release a package as a given version, <package>=<version>')
-            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'report format: text or markdown', 'text')
+            ->addOption('set', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'release a package as a given version, or not at all, <package>=<version|skip>')
+            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'report format: text, markdown, or json on stdout with the rest on stderr', 'text')
         ;
-    }
-
-    /**
-     * The parent requires a token, but the release lookups are public and a token only raises the
-     * rate limit.
-     */
-    #[\Override]
-    protected function interact(InputInterface $input, OutputInterface $output): void
-    {
     }
 
     #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
+        $format = $input->getOption('format');
+        if (!in_array($format, ['text', 'markdown', 'json'], true)) {
+            $output->writeln('<error>--format must be text, markdown or json</error>');
+
+            return Command::FAILURE;
+        }
+        $json = null;
+        if ($format === 'json') {
+            $json = $output;
+            $output = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
+        }
         $this->registerInputAndOutput($input, $output);
-        $this->token = $input->getOption('token') ?: (getenv('GITHUB_TOKEN') ?: null);
+        //optional: the release lookups are public, and a token only raises the rate limit
+        $this->token = $this->token($input);
         $dryRun = $this->dry_run = (bool) $input->getOption('dry-run');
         $this->source_branch = $input->getOption('branch') ?? 'main';
-        $markdown = $input->getOption('format') === 'markdown';
+        $markdown = $format === 'markdown';
         $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
 
         $date = $input->getOption('date') ?? date('Y-m-d');
         $parsedDate = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
         if ($parsedDate === false || $parsedDate->format('Y-m-d') !== $date) {
             $output->writeln("<error>--date must be YYYY-MM-DD, got \"{$date}\"</error>");
-
-            return Command::FAILURE;
-        }
-        if (!in_array($input->getOption('format'), ['text', 'markdown'], true)) {
-            $output->writeln('<error>--format must be text or markdown</error>');
 
             return Command::FAILURE;
         }
@@ -180,7 +181,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
                 $entry->version = $this->choose($entry);
             }
         }
-        $this->report_order($entries);
+        $order = $this->report_order($entries);
 
         $written = [];
         $aliases = [];
@@ -220,8 +221,31 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         } else {
             $output->writeln('<info>Nothing to release.</info>');
         }
+        $json?->writeln($this->json_report($entries, $order), OutputInterface::OUTPUT_RAW);
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * @param array<PrepEntry> $entries
+     */
+    private function json_report(array $entries, ReleaseOrderReport $order): string
+    {
+        $packages = array_map(static fn (PrepEntry $entry): array => [
+            'package' => $entry->package,
+            'repository' => $entry->label(),
+            'latest' => $entry->latest,
+            'version' => $entry->version,
+            'reason' => $entry->reason,
+            'warnings' => $entry->warnings,
+        ], $entries);
+
+        return json_encode([
+            'packages' => $packages,
+            'order' => $order->order,
+            'constraint_warnings' => $order->warnings,
+            'release' => in_array(true, array_map(static fn (PrepEntry $entry): bool => $entry->version !== null, $entries), true),
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     }
 
     /**
@@ -283,15 +307,15 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
     /**
      * @param array<string> $set values of --set
-     * @return array<string, string>|null version by package name, or null when a value is malformed
+     * @return array<string, string>|null version, or `skip`, by package name, or null when a value is malformed
      */
     private function parse_overrides(array $set): ?array
     {
         $overrides = [];
         foreach ($set as $item) {
             [$name, $version] = array_pad(explode('=', $item, 2), 2, '');
-            if ($name === '' || preg_match(self::VERSION_PATTERN, $version) !== 1) {
-                $this->output->writeln(sprintf('<error>--set expects <package>=<version>, got "%s"</error>', $item));
+            if ($name === '' || ($version !== self::SKIP && preg_match(self::VERSION_PATTERN, $version) !== 1)) {
+                $this->output->writeln(sprintf('<error>--set expects <package>=<version|skip>, got "%s"</error>', $item));
 
                 return null;
             }
@@ -426,7 +450,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
      *
      * @param array<PrepEntry> $entries
      */
-    private function report_order(array $entries): void
+    private function report_order(array $entries): ReleaseOrderReport
     {
         $packages = [];
         foreach ($entries as $entry) {
@@ -439,7 +463,10 @@ class ReleasePrepCommand extends AbstractReleaseCommand
                 $entry->spi,
             );
         }
-        $this->print_order($this->orderChecker->check($packages));
+        $report = $this->orderChecker->check($packages);
+        $this->print_order($report);
+
+        return $report;
     }
 
     /**
@@ -480,6 +507,12 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $entry->latest = $latest;
         $override = $overrides[$project] ?? $overrides[$entry->package] ?? null;
 
+        if ($override === self::SKIP) {
+            $entry->forced = true;
+            $entry->reason = 'skipped by --set';
+
+            return;
+        }
         if ($override !== null) {
             $entry->version = $override;
             $entry->forced = true;

@@ -10,6 +10,7 @@ use OpenTelemetry\DevTools\Tests\Unit\Behavior\UsesVfsTrait;
 use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
+use Psr\Http\Message\RequestInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 
@@ -23,12 +24,34 @@ class BranchAliasCommandTest extends TestCase
     private CommandTester $commandTester;
     /** @var array<string> directories to remove after the test */
     private array $cleanup = [];
+    /** @var list<string> the Authorization header of each request */
+    private array $authorizations = [];
+    private string|false $environmentToken;
 
     #[\Override]
     public function setUp(): void
     {
         $this->setUpVcs();
         $this->commandTester = new CommandTester(new BranchAliasCommand());
+        $this->environmentToken = getenv('GITHUB_TOKEN');
+        putenv('GITHUB_TOKEN');
+    }
+
+    public function test_token_is_read_from_the_environment_without_interaction(): void
+    {
+        putenv('GITHUB_TOKEN=from-env');
+        $root = $this->setUpRealMonorepo('packages/api');
+
+        $this->assertSame(Command::SUCCESS, $this->executeWithRelease($root, '1.10.0', ['--token' => null], false));
+        $this->assertSame(['Bearer from-env'], $this->authorizations);
+    }
+
+    public function test_token_is_optional_without_interaction(): void
+    {
+        $root = $this->setUpRealMonorepo('packages/api');
+
+        $this->assertSame(Command::SUCCESS, $this->executeWithRelease($root, '1.10.0', ['--token' => null], false));
+        $this->assertSame([''], $this->authorizations);
     }
 
     public function test_fails_when_path_is_empty(): void
@@ -158,18 +181,25 @@ class BranchAliasCommandTest extends TestCase
         );
     }
 
-    private function executeWithRelease(string $path, string $version): int
+    /**
+     * @param array<string, ?string> $options
+     */
+    private function executeWithRelease(string $path, string $version, array $options = [], bool $interactive = true): int
     {
         $response = new Response(200, [], json_encode([
             'tag_name' => $version,
             'created_at' => '2026-01-01T00:00:00Z',
         ]));
         $client = $this->createMock(ClientInterface::class);
-        $client->method('sendRequest')->willReturn($response);
+        $client->method('sendRequest')->willReturnCallback(function (RequestInterface $request) use ($response): Response {
+            $this->authorizations[] = $request->getHeaderLine('Authorization');
+
+            return $response;
+        });
 
         $this->commandTester = new CommandTester(new BranchAliasCommand(null, $client));
 
-        return $this->execute($path);
+        return $this->execute($path, $options, $interactive);
     }
 
     #[\Override]
@@ -178,14 +208,19 @@ class BranchAliasCommandTest extends TestCase
         foreach ($this->cleanup as $directory) {
             exec('rm -rf ' . escapeshellarg($directory));
         }
+        putenv($this->environmentToken === false ? 'GITHUB_TOKEN' : "GITHUB_TOKEN={$this->environmentToken}");
     }
 
-    private function execute(string $path): int
+    /**
+     * @param array<string, ?string> $options
+     */
+    private function execute(string $path, array $options = [], bool $interactive = true): int
     {
-        $this->commandTester->execute([
-            '--path' => $path,
-            '--token' => 'test-token',
-        ]);
+        $options += ['--path' => $path, '--token' => 'test-token'];
+        $this->commandTester->execute(
+            array_filter($options, static fn (?string $value): bool => $value !== null),
+            ['interactive' => $interactive]
+        );
 
         return $this->commandTester->getStatusCode();
     }

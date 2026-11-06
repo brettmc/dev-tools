@@ -36,7 +36,12 @@ class PeclTagCommand extends AbstractReleaseCommand
     #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $this->token = $input->getOption('token');
+        $this->token = $this->token($input);
+        if ($this->token === null) {
+            $output->writeln('<error>No github token provided (via --token or GITHUB_TOKEN env)</error>');
+
+            return Command::FAILURE;
+        }
         $branch = $input->getOption('branch');
         $this->dry_run = $input->getOption('dry-run');
         $this->client = Psr18ClientDiscovery::find();

@@ -124,6 +124,28 @@ class GitRunnerTest extends TestCase
         (new GitRunner())->isAncestor($this->dir, str_repeat('a', 40), 'HEAD');
     }
 
+    public function test_tree_is_the_hash_of_a_directory_at_a_commit(): void
+    {
+        $sha = $this->commit();
+        mkdir($this->dir . '/src/API', 0o777, true);
+        file_put_contents($this->dir . '/src/API/composer.json', '{"name":"open-telemetry/api"}');
+        $this->git('add', 'src');
+        $this->git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'API');
+        $expected = trim($this->git('rev-parse', 'HEAD:src/API'));
+
+        $this->assertSame($expected, (new GitRunner())->tree($this->dir, 'HEAD', 'src/API'));
+        $this->assertNull((new GitRunner())->tree($this->dir, $sha, 'src/API'));
+    }
+
+    public function test_tree_fails_for_a_commit_not_in_the_repository(): void
+    {
+        $this->commit();
+
+        $this->expectException(RuntimeException::class);
+
+        (new GitRunner())->tree($this->dir, str_repeat('a', 40), 'src/API');
+    }
+
     private function commit(string $message = 'Initial'): string
     {
         is_dir($this->dir . '/.git') || $this->git('init', '--quiet');
