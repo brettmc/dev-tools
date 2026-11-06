@@ -35,7 +35,6 @@ abstract class AbstractReleaseCommand extends BaseCommand
     protected ClientInterface $client;
     protected Parser $parser;
     protected ?string $token = null;
-    protected array $sources = [];
     protected bool $dry_run = false;
     protected string $source_branch = 'main';
 
@@ -106,17 +105,6 @@ abstract class AbstractReleaseCommand extends BaseCommand
         return $release;
     }
 
-    protected function get_downstream_unreleased_commits(Repository $repository): array
-    {
-        $commits_url = "https://api.github.com/repos/{$repository->downstream}/commits";
-        $latestRelease = $repository->latestRelease;
-        if ($latestRelease !== null) {
-            $commits_url .= '?since=' . $this->since($latestRelease);
-        }
-
-        return $this->get_commits($commits_url, $repository);
-    }
-
     /**
      * Github's `since` filter is inclusive, as is `git log --since`, so advance one second past the
      * tag to avoid listing the already-released commit. This happens with lightweight tags, where
@@ -130,15 +118,17 @@ abstract class AbstractReleaseCommand extends BaseCommand
             ->format('Y-m-d\TH:i:s\Z');
     }
 
-    private function get_commits(string $url, Repository $repository): array
+    /**
+     * @param list<array{sha: string, author: string, message: string}> $log from GitRunner::log()
+     * @return list<Commit>
+     */
+    protected function commits(Repository $repository, array $log): array
     {
-        $response = $this->fetch($url);
-        $data = json_decode($response->getBody()->getContents());
         $commits = [];
-        foreach ($data as $row) {
+        foreach ($log as $entry) {
             $commit = new Commit();
-            $commit->sha = $row->sha;
-            $commit->message = $row->commit->message;
+            $commit->sha = $entry['sha'];
+            $commit->message = $entry['message'];
             $commit->pullRequest = $this->get_pull_request($repository, $commit);
             $commits[] = $commit;
         }
@@ -235,35 +225,6 @@ abstract class AbstractReleaseCommand extends BaseCommand
         $json = json_decode((string) file_get_contents($path . '/' . self::COMPOSER_FILE), true);
 
         return is_array($json) && is_string($json['name'] ?? null) ? $json['name'] : '';
-    }
-
-    /**
-     * @throws \Exception
-     * @return array<Repository>
-     */
-    protected function find_repositories(?string $filter = null): array
-    {
-        $repositories = [];
-        foreach ($this->sources as $key => $repo) {
-            $this->output->isVerbose() && $this->output->writeln("<info>Fetching .gitsplit.yaml for {$key} ({$repo})</info>");
-            $repositories = array_merge($repositories, $this->get_gitsplit_repositories($repo, $filter));
-        }
-
-        return $repositories;
-    }
-
-    private function get_gitsplit_repositories(string $repo, ?string $filter): array
-    {
-        $url = "https://raw.githubusercontent.com/{$repo}/main/.gitsplit.yml";
-        $response = $this->fetch($url);
-        if ($response->getStatusCode() !== 200) {
-            throw new \Exception("Error fetching {$url}");
-        }
-
-        $yaml = $this->parser->parse($response->getBody()->getContents());
-        $this->output->isVeryVerbose() && $this->output->writeln('[RESPONSE]' . json_encode($yaml['splits']));
-
-        return $this->map_gitsplit_repositories($yaml['splits'], $repo, $filter);
     }
 
     /**

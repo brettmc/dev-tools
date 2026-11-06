@@ -281,16 +281,7 @@ class ReleaseCommand extends AbstractReleaseCommand
             return $this->problem("The commits to {$repository->upstream->path} of {$this->sha} cannot be read by git: {$e->getMessage()}") ? null : [];
         }
 
-        $commits = [];
-        foreach ($log as $entry) {
-            $commit = new Commit();
-            $commit->sha = $entry['sha'];
-            $commit->message = $entry['message'];
-            $commit->pullRequest = $this->get_pull_request($repository, $commit);
-            $commits[] = $commit;
-        }
-
-        return $commits;
+        return $this->commits($repository, $log);
     }
 
     /**

@@ -387,20 +387,22 @@ Then review the changes with `git diff`, and open a pull request against the mon
 ## PECL release tool
 
 ### Generate updated `package.xml`
-A tool to fetch and update package.xml, for a new version of the opentelemetry extension on PECL.
+A tool to update package.xml, for a new version of the opentelemetry extension on PECL.
 
 ```shell
-bin/otel release:pecl
+bin/otel release:pecl --path=../opentelemetry-php-instrumentation
 ```
 
 Options:
 - `-v[vv]` - verbosity
+- `--path=` - a checkout of opentelemetry-php-instrumentation, at the commit being released (default: the
+  working directory)
 - `--force` - add a new version even if no changes detected
 
 The script will then:
 * fetch latest release
-* fetch all commits newer than last release
-* fetch `package.xml`
+* read the commits in the checkout newer than the last release
+* read `ext/package.xml` from the checkout
 * prompt for next version number
 * move existing version details into a new `release` in `<changelog>`
 * update XML with new version details

@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
 use DOMDocument;
-use Exception;
 use Http\Discovery\Psr18ClientDiscovery;
 use OpenTelemetry\DevTools\Console\Release\Project;
 use OpenTelemetry\DevTools\Console\Release\Repository;
+use OpenTelemetry\DevTools\Package\Git\GitRunner;
+use Psr\Http\Client\ClientInterface;
+use RuntimeException;
 use SimpleXMLElement;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\QuestionHelper;
@@ -23,6 +25,18 @@ class PeclCommand extends AbstractReleaseCommand
     private const OWNER = 'open-telemetry';
     private const REPO = 'opentelemetry-php-instrumentation';
     private const REPOSITORY = self::OWNER . '/' . self::REPO;
+    private const PACKAGE_XML = 'ext/package.xml';
+    private ?ClientInterface $clientOverride;
+    private GitRunner $git;
+
+    public function __construct(?ClientInterface $client = null, ?GitRunner $git = null)
+    {
+        parent::__construct();
+        //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
+        //when no PSR-18 client is installed, which should not happen merely by listing the commands
+        $this->clientOverride = $client;
+        $this->git = $git ?? new GitRunner();
+    }
 
     #[\Override]
     protected function configure(): void
@@ -30,6 +44,7 @@ class PeclCommand extends AbstractReleaseCommand
         $this
             ->setName('release:pecl')
             ->setDescription('Update auto-instrumentation package.xml for PECL release')
+            ->addOption('path', null, InputOption::VALUE_OPTIONAL, 'path to an opentelemetry-php-instrumentation checkout (default: working directory)')
             ->addOption('force', ['f'], InputOption::VALUE_NONE, 'force')
         ;
     }
@@ -38,8 +53,15 @@ class PeclCommand extends AbstractReleaseCommand
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $force = $input->getOption('force');
-        $this->client = Psr18ClientDiscovery::find();
+        $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
+        $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
         $this->registerInputAndOutput($input, $output);
+        $packageXml = $path . '/' . self::PACKAGE_XML;
+        if (!is_file($packageXml)) {
+            $this->output->writeln(sprintf('<error>%s has no %s: pass --path to an %s checkout</error>', $path, self::PACKAGE_XML, self::REPOSITORY));
+
+            return Command::FAILURE;
+        }
         $project = new Project(self::REPOSITORY);
         $repository = new Repository();
         $repository->downstream = $project;
@@ -50,7 +72,15 @@ class PeclCommand extends AbstractReleaseCommand
 
             return Command::FAILURE;
         }
-        $repository->commits = $this->get_downstream_unreleased_commits($repository);
+
+        try {
+            $log = $this->git->log($path, 'HEAD', '.', $this->since($repository->latestRelease));
+        } catch (RuntimeException $e) {
+            $this->output->writeln("<error>{$path} cannot be read by git: {$e->getMessage()}</error>");
+
+            return Command::FAILURE;
+        }
+        $repository->commits = $this->commits($repository, $log);
         if (count($repository->commits) === 0) {
             $this->output->writeln("<info>No unreleased commits since {$repository->latestRelease->version}</info>");
             if (!$force) {
@@ -58,13 +88,7 @@ class PeclCommand extends AbstractReleaseCommand
             }
         }
 
-        $url = sprintf('https://raw.githubusercontent.com/%s/main/ext/package.xml', self::REPOSITORY);
-        $response = $this->fetch($url);
-        if ($response->getStatusCode() !== 200) {
-            throw new Exception("Error fetching {$url}");
-        }
-
-        $xml = new SimpleXMLElement($response->getBody()->getContents());
+        $xml = new SimpleXMLElement((string) file_get_contents($packageXml));
 
         $this->process($repository, $xml);
 

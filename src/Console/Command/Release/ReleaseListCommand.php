@@ -6,6 +6,7 @@ namespace OpenTelemetry\DevTools\Console\Command\Release;
 
 use Http\Discovery\Psr18ClientDiscovery;
 use OpenTelemetry\DevTools\Console\Release\Release;
+use Psr\Http\Client\ClientInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Helper\Table;
@@ -16,12 +17,23 @@ use Symfony\Component\Yaml\Parser;
 
 class ReleaseListCommand extends AbstractReleaseCommand
 {
+    private ?ClientInterface $clientOverride;
+
+    public function __construct(?ClientInterface $client = null)
+    {
+        parent::__construct();
+        //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
+        //when no PSR-18 client is installed, which should not happen merely by listing the commands
+        $this->clientOverride = $client;
+    }
+
     #[\Override]
     protected function configure(): void
     {
         $this
             ->setName('release:list')
             ->setDescription('List the latest version of each package')
+            ->addOption('path', null, InputOption::VALUE_OPTIONAL, 'path to a monorepo checkout (default: working directory)')
             ->addOption('token', ['t'], InputOption::VALUE_OPTIONAL, 'github token')
             ->addOption('stable', null, InputOption::VALUE_NONE, 'only show versions with a 1.0 release')
             ->addOption('unstable', null, InputOption::VALUE_NONE, 'only show versions without a 1.0 release')
@@ -37,16 +49,13 @@ class ReleaseListCommand extends AbstractReleaseCommand
             throw new \InvalidArgumentException('Can only use one of stable/unstable');
         }
         $this->token = $this->token($input);
-        $this->sources = self::AVAILABLE_REPOS;
-        $this->client = Psr18ClientDiscovery::find();
+        $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
+        $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
         $this->parser = new Parser();
         $this->registerInputAndOutput($input, $output);
 
-        try {
-            $found = $this->find_repositories();
-        } catch (\Exception $e) {
-            $this->output->writeln("<error>{$e->getCode()} {$e->getMessage()}</error>");
-
+        $found = $this->find_split_packages($path, null);
+        if ($found === null) {
             return Command::FAILURE;
         }
         if (count($found) === 0) {
