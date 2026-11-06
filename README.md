@@ -259,6 +259,9 @@ For each package it will:
 
 A forced major warns when Unreleased records no breaking changes.
 
+A package with changes gets no suggestion when its latest tag is a pre-release or can't be parsed. These
+are listed after the table. Choose a version at the prompt or with `--set`.
+
 The version is a decision, so an alias ahead of it is lowered rather than kept: sdk-configuration at
 `1.0.x-dev`, released as 0.10.0, becomes `0.10.x-dev`. A lowered alias is printed as a warning.
 
@@ -288,6 +291,9 @@ errors go to stderr. The object holds each package's latest release, the version
 is not released) with the reason, and its breaking-change warnings. It also holds the tag order, the
 constraint warnings, and whether anything is to be released.
 
+`undecided` is true for a package with changes that got no suggestion and no version. Without
+interaction it is not released, and the run still succeeds, so check for it before tagging.
+
 The object is printed however the prep ends. `completed` is false, and the exit status non-zero, when
 it failed, with the reason on stderr. `packages` and `order` are then empty if it failed before the
 packages were assessed.
@@ -295,9 +301,9 @@ packages were assessed.
 ```json
 {
     "packages": [
-        {"package": "open-telemetry/api", "repository": "opentelemetry-php/api", "latest": "1.10.1", "version": "1.11.0", "reason": "new features", "warnings": []},
-        {"package": "open-telemetry/sdk", "repository": "opentelemetry-php/sdk", "latest": "1.15.0", "version": "1.16.0", "reason": "breaking changes recorded", "warnings": ["Dropped X."]},
-        {"package": "open-telemetry/context", "repository": "opentelemetry-php/context", "latest": "1.4.0", "version": null, "reason": "no unreleased changes", "warnings": []}
+        {"package": "open-telemetry/api", "repository": "opentelemetry-php/api", "latest": "1.10.1", "version": "1.11.0", "reason": "new features", "warnings": [], "undecided": false},
+        {"package": "open-telemetry/sdk", "repository": "opentelemetry-php/sdk", "latest": "1.15.0", "version": "1.16.0", "reason": "breaking changes recorded", "warnings": ["Dropped X."], "undecided": false},
+        {"package": "open-telemetry/context", "repository": "opentelemetry-php/context", "latest": "1.4.0", "version": null, "reason": "no unreleased changes", "warnings": [], "undecided": false}
     ],
     "order": ["open-telemetry/api", "open-telemetry/sdk"],
     "constraint_warnings": [],

@@ -293,6 +293,63 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('## 1.0.0 - 2026-11-03', $this->changelog('src/API'));
     }
 
+    public function test_undecided_packages_are_listed_after_the_table(): void
+    {
+        $this->releases = ['api' => '1.0.0RC1', 'sdk' => '1.15.0'];
+        $this->monorepo(['src/API' => ['api', self::ADDED], 'src/SDK' => ['sdk', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
+        $this->assertStringContainsString(
+            "\nNo version suggested, choose one with --set=<package>=<version>:\n- opentelemetry-php/api\n",
+            $this->tester->getDisplay()
+        );
+        $this->assertStringNotContainsString('- opentelemetry-php/sdk', $this->tester->getDisplay());
+    }
+
+    public function test_undecided_packages_are_listed_in_markdown(): void
+    {
+        $this->releases = ['api' => '1.0.0RC1'];
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'markdown']));
+        $this->assertStringContainsString(
+            "\n**No version suggested**, choose one with `--set=<package>=<version>`:\n- opentelemetry-php/api\n",
+            $this->tester->getDisplay()
+        );
+    }
+
+    public function test_no_undecided_list_when_every_package_has_a_suggestion(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
+        $this->assertStringNotContainsString('No version suggested', $this->tester->getDisplay());
+    }
+
+    public function test_json_format_marks_a_package_undecided(): void
+    {
+        $this->releases = ['api' => '1.0.0RC1', 'sdk' => '1.15.0'];
+        $this->monorepo(['src/API' => ['api', self::ADDED], 'src/SDK' => ['sdk', self::FIXED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--format' => 'json'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $json = json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame([true, false], array_column($json['packages'], 'undecided'));
+        $this->assertSame([null, '1.15.1'], array_column($json['packages'], 'version'));
+    }
+
+    public function test_json_format_package_chosen_at_the_prompt_is_not_undecided(): void
+    {
+        $this->releases = ['api' => '1.0.0RC1'];
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--format' => 'json'], ['inputs' => ['1.0.0'], 'capture_stderr_separately' => true]));
+
+        $json = json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame([false], array_column($json['packages'], 'undecided'));
+        $this->assertSame(['1.0.0'], array_column($json['packages'], 'version'));
+    }
+
     public function test_package_with_no_release_is_skipped(): void
     {
         $this->releases = [];
@@ -362,9 +419,9 @@ class ReleasePrepCommandTest extends TestCase
 
         $this->assertSame([
             'packages' => [
-                ['package' => 'open-telemetry/api', 'repository' => 'opentelemetry-php/api', 'latest' => '1.10.1', 'version' => '1.11.0', 'reason' => 'new features', 'warnings' => []],
-                ['package' => 'open-telemetry/sdk', 'repository' => 'opentelemetry-php/sdk', 'latest' => '1.15.0', 'version' => '1.16.0', 'reason' => 'breaking changes recorded', 'warnings' => ['Dropped X.']],
-                ['package' => 'open-telemetry/context', 'repository' => 'opentelemetry-php/context', 'latest' => '1.4.0', 'version' => null, 'reason' => 'no unreleased changes', 'warnings' => []],
+                ['package' => 'open-telemetry/api', 'repository' => 'opentelemetry-php/api', 'latest' => '1.10.1', 'version' => '1.11.0', 'reason' => 'new features', 'warnings' => [], 'undecided' => false],
+                ['package' => 'open-telemetry/sdk', 'repository' => 'opentelemetry-php/sdk', 'latest' => '1.15.0', 'version' => '1.16.0', 'reason' => 'breaking changes recorded', 'warnings' => ['Dropped X.'], 'undecided' => false],
+                ['package' => 'open-telemetry/context', 'repository' => 'opentelemetry-php/context', 'latest' => '1.4.0', 'version' => null, 'reason' => 'no unreleased changes', 'warnings' => [], 'undecided' => false],
             ],
             'order' => ['open-telemetry/api', 'open-telemetry/sdk'],
             'constraint_warnings' => [],

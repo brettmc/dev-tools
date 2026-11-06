@@ -26,6 +26,7 @@ use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use OpenTelemetry\DevTools\Util\Path;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -251,6 +252,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             'version' => $entry->version,
             'reason' => $entry->reason,
             'warnings' => $entry->warnings,
+            'undecided' => $entry->undecided && $entry->version === null,
         ], $this->entries);
 
         return json_encode([
@@ -607,6 +609,16 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             $this->output->writeln($markdown ? "**{$entry->label()}**" : "<comment>{$entry->label()}: check before releasing</comment>");
             foreach ($entry->warnings as $warning) {
                 $this->output->writeln('- ' . str_replace("\n", "\n  ", $warning));
+            }
+        }
+        $undecided = array_filter($entries, static fn (PrepEntry $entry): bool => $entry->undecided);
+        if ($undecided !== []) {
+            $this->output->writeln('');
+            $this->output->writeln($markdown
+                ? '**No version suggested**, choose one with `--set=<package>=<version>`:'
+                : OutputFormatter::escape('No version suggested, choose one with --set=<package>=<version>:'));
+            foreach ($undecided as $entry) {
+                $this->output->writeln('- ' . $entry->label());
             }
         }
     }
