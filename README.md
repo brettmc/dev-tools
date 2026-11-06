@@ -76,9 +76,9 @@ except for a shallow clone.
 
 gitsplit rewrites every commit it pushes to a split repository, so the split commit to tag is found by
 content. For each package with changes, the command reads the tree of the package's directory in the
-commit being released, then walks the split's `--branch` history back to its latest release, at most
-100 commits, for the commit with the same tree. That commit is tagged, and the downstream diffs are
-read at it. The same tree means the split's `CHANGELOG.md` is the checkout's. With `--force`, the walk
+commit being released, then walks the split's `--branch` history back to its latest release for the
+commit with the same tree. The walk reads a page of 100 commits at a time and stops at the first match.
+That commit is tagged, and the downstream diffs are read at it. The same tree means the split's `CHANGELOG.md` is the checkout's. With `--force`, the walk
 includes the latest release, as a package without changes has its tree.
 
 Nothing reads the moving branch tip after the run starts. A merge during the run is neither tagged nor a

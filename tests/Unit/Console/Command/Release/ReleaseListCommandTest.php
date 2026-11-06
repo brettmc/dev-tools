@@ -6,6 +6,7 @@ namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Release;
 
 use Nyholm\Psr7\Response;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseListCommand;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Tests\Unit\Behavior\UsesVfsTrait;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
@@ -41,6 +42,9 @@ class ReleaseListCommandTest extends TestCase
         $client->method('sendRequest')->willReturnCallback(function (RequestInterface $request): Response {
             $url = (string) $request->getUri();
             $this->urls[] = $url;
+            if (preg_match('#/repos/opentelemetry-php/[^/]+$#', $url) === 1) {
+                return new Response(200, [], json_encode(['full_name' => substr($url, strlen('https://api.github.com/repos/'))]));
+            }
             preg_match('#/repos/opentelemetry-php/([^/]+)/releases/latest$#', $url, $m);
             $version = $this->latest[$m[1] ?? ''] ?? null;
 
@@ -48,7 +52,7 @@ class ReleaseListCommandTest extends TestCase
                 ? new Response(404)
                 : new Response(200, [], json_encode(['tag_name' => $version, 'created_at' => '2026-01-01T00:00:00Z']));
         });
-        $this->tester = new CommandTester(new ReleaseListCommand($client));
+        $this->tester = new CommandTester(new ReleaseListCommand(new GitHub($client)));
     }
 
     public function test_splits_are_read_from_the_checkout(): void

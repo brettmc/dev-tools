@@ -6,6 +6,7 @@ namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Release;
 
 use Nyholm\Psr7\Response;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrepCommand;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
@@ -34,7 +35,7 @@ class ReleasePrepCommandTest extends TestCase
     /** @var array<string, string> latest tag by downstream project, eg api => 1.10.1 */
     private array $releases = [];
     private ProviderDependencies $dependencies;
-    private ?RuntimeException $readError = null;
+    private RuntimeException|\Error|null $readError = null;
     private CommandTester $tester;
     /** @var list<string> URLs requested */
     private array $requests = [];
@@ -407,6 +408,17 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('Housekeeping', $this->tester->getErrorOutput());
     }
 
+    public function test_json_format_is_printed_when_the_prep_crashes(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        $this->readError = new \TypeError('Cannot assign null to property');
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'json'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertFalse(json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR)['completed']);
+        $this->assertStringContainsString('Cannot assign null to property', $this->tester->getErrorOutput());
+    }
+
     public function test_json_format_is_printed_when_a_lookup_throws(): void
     {
         $this->monorepo(['src/API' => ['api', self::FIXED]]);
@@ -415,7 +427,7 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'json'], ['interactive' => false, 'capture_stderr_separately' => true]));
 
         $this->assertFalse(json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR)['completed']);
-        $this->assertStringContainsString('Error retrieving latest release', $this->tester->getErrorOutput());
+        $this->assertStringContainsString('releases/latest: 500', $this->tester->getErrorOutput());
     }
 
     public function test_unknown_format_fails(): void
@@ -571,7 +583,7 @@ class ReleasePrepCommandTest extends TestCase
         $this->monorepo(['src/API' => ['api', self::FIXED]]);
 
         $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
-        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/main', $this->requests);
+        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/ref/heads/main', $this->requests);
         $this->assertSame([[$this->root->url(), 'abc123', 'HEAD']], $this->ancestorChecks);
         $this->assertStringContainsString('## 1.10.2 - 2026-11-03', $this->changelog('src/API'));
     }
@@ -630,8 +642,8 @@ class ReleasePrepCommandTest extends TestCase
         $this->monorepo(['src/API' => ['api', self::FIXED]]);
 
         $this->assertSame(Command::SUCCESS, $this->prep(['--branch' => '1.x'], ['interactive' => false]));
-        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/1.x', $this->requests);
-        $this->assertNotContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/main', $this->requests);
+        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/ref/heads/1.x', $this->requests);
+        $this->assertNotContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/ref/heads/main', $this->requests);
     }
 
     public function test_contrib_checkout_is_checked_against_contrib(): void
@@ -641,7 +653,7 @@ class ReleasePrepCommandTest extends TestCase
         $this->releases = ['contrib-auto-laravel' => '1.0.0'];
 
         $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
-        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php-contrib/git/matching-refs/heads/main', $this->requests);
+        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php-contrib/git/ref/heads/main', $this->requests);
     }
 
     public function test_checkout_of_an_unknown_monorepo_fails(): void
@@ -747,10 +759,13 @@ class ReleasePrepCommandTest extends TestCase
         $client->method('sendRequest')->willReturnCallback(function (RequestInterface $request): Response {
             $url = (string) $request->getUri();
             $this->requests[] = $url;
-            if (preg_match('#/git/matching-refs/heads/(.+)$#', $url, $m) === 1) {
+            if (preg_match('#/git/ref/heads/(.+)$#', $url, $m) === 1) {
                 return $this->tip === null
                     ? new Response(500)
-                    : new Response(200, [], json_encode([['ref' => "refs/heads/{$m[1]}", 'object' => ['sha' => $this->tip]]]));
+                    : new Response(200, [], json_encode(['ref' => "refs/heads/{$m[1]}", 'object' => ['sha' => $this->tip]]));
+            }
+            if (preg_match('#/repos/opentelemetry-php/[^/]+$#', $url) === 1) {
+                return new Response(200, [], json_encode(['full_name' => substr($url, strlen('https://api.github.com/repos/'))]));
             }
             if ($this->latestStatus !== 200) {
                 return new Response($this->latestStatus);
@@ -776,7 +791,7 @@ class ReleasePrepCommandTest extends TestCase
             return $this->tipIsAncestor;
         });
         $git->method('changes')->willReturnCallback(fn (): array => $this->changes);
-        $this->tester = new CommandTester(new ReleasePrepCommand($client, $reader, $git));
+        $this->tester = new CommandTester(new ReleasePrepCommand(new GitHub($client), $reader, $git));
         $inputs = $options['inputs'] ?? [];
         unset($options['inputs']);
         $inputs !== [] && $this->tester->setInputs($inputs);

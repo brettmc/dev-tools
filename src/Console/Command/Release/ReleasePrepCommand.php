@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
 use Composer\Semver\VersionParser;
-use Http\Discovery\Psr18ClientDiscovery;
 use InvalidArgumentException;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\PrepEntry;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogParser;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogRewriter;
@@ -22,8 +22,6 @@ use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
-use Psr\Http\Client\ClientExceptionInterface;
-use Psr\Http\Client\ClientInterface;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\Table;
@@ -46,7 +44,6 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
     private const BRANCH_KEY = 'dev-main';
 
-    private ?ClientInterface $clientOverride;
     private ChangelogParser $changelogParser;
     private ChangelogRewriter $rewriter;
     private VersionSuggester $suggester;
@@ -64,12 +61,9 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     private array $entries = [];
     private ReleaseOrderReport $order;
 
-    public function __construct(?ClientInterface $client = null, ?PackageDependencyReader $dependencyReader = null, ?GitRunner $git = null)
+    public function __construct(?GitHub $github = null, ?PackageDependencyReader $dependencyReader = null, ?GitRunner $git = null)
     {
-        parent::__construct();
-        //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
-        //when no PSR-18 client is installed, which should not happen merely by listing the commands
-        $this->clientOverride = $client;
+        parent::__construct($github);
         $this->changelogParser = new ChangelogParser();
         $this->rewriter = new ChangelogRewriter();
         $this->suggester = new VersionSuggester();
@@ -116,7 +110,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
         try {
             $status = $this->prepare($input, $errors, false);
-        } catch (\Exception|ClientExceptionInterface $e) {
+        } catch (\Throwable $e) {
             //the JSON is printed however the prep ends, so a workflow can always parse it
             $errors->writeln("<error>{$e->getMessage()}</error>");
             $status = Command::FAILURE;
@@ -147,7 +141,6 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             return Command::FAILURE;
         }
 
-        $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
         $this->parser = new Parser();
 
         try {

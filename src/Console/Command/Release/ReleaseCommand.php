@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
 use Composer\Semver\Comparator;
-use Http\Discovery\Psr18ClientDiscovery;
 use OpenTelemetry\DevTools\Console\Release\Commit;
 use OpenTelemetry\DevTools\Console\Release\Diff;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
+use OpenTelemetry\DevTools\Console\Release\GitHubException;
 use OpenTelemetry\DevTools\Console\Release\Release;
 use OpenTelemetry\DevTools\Console\Release\ReleaseNotes;
 use OpenTelemetry\DevTools\Console\Release\Repository;
@@ -17,8 +18,6 @@ use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
-use Psr\Http\Client\ClientExceptionInterface;
-use Psr\Http\Client\ClientInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Helper\QuestionHelper;
@@ -44,7 +43,6 @@ class ReleaseCommand extends AbstractReleaseCommand
     private array $skipped = [];
     /** @var array<string, ?ChangelogReleases> CHANGELOG.md in the checkout, by downstream repository */
     private array $changelogs = [];
-    private ?ClientInterface $clientOverride;
     private PackageDependencyReader $dependencyReader;
     private GitRunner $git;
     /** the monorepo commit being released */
@@ -53,12 +51,9 @@ class ReleaseCommand extends AbstractReleaseCommand
     private array $splitCommits = [];
     private string $checkoutPath;
 
-    public function __construct(?ClientInterface $client = null, ?PackageDependencyReader $dependencyReader = null, ?GitRunner $git = null)
+    public function __construct(?GitHub $github = null, ?PackageDependencyReader $dependencyReader = null, ?GitRunner $git = null)
     {
-        parent::__construct();
-        //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
-        //when no PSR-18 client is installed, which should not happen merely by listing the commands
-        $this->clientOverride = $client;
+        parent::__construct($github);
         $this->dependencyReader = $dependencyReader ?? new PackageDependencyReader();
         $this->git = $git ?? new GitRunner();
     }
@@ -97,7 +92,7 @@ class ReleaseCommand extends AbstractReleaseCommand
 
         try {
             $status = $this->release($input, $output->getErrorOutput());
-        } catch (\Exception|ClientExceptionInterface $e) {
+        } catch (\Throwable $e) {
             //the JSON is what tells a workflow which packages were released before the failure
             $output->getErrorOutput()->writeln("<error>{$e->getMessage()}</error>");
             $status = Command::FAILURE;
@@ -136,7 +131,6 @@ class ReleaseCommand extends AbstractReleaseCommand
         }
         $source = $input->getOption('repo');
         $filter = $input->getOption('filter');
-        $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
         $this->parser = new Parser();
         //sections redraw in place on stdout, which holds only the JSON in that format
         $progress_section = $output instanceof ConsoleOutputInterface ? $output->section() : $output;
@@ -440,9 +434,9 @@ class ReleaseCommand extends AbstractReleaseCommand
      * Find the split commit with the same content as the package in the commit being released,
      * which is the one to tag. gitsplit rewrites every commit, so the trees are what match.
      *
-     * The split's history is walked newest first back to its latest release, which bounds the walk,
-     * as does the cap of one page of 100 commits. With --force the walk goes past the latest
-     * release, as an unchanged package has the tree of the commit released.
+     * The split's history is walked newest first back to its latest release, which bounds the walk.
+     * With --force the walk goes past the latest release, as an unchanged package has the tree of
+     * the commit released, so it stops at the first match instead.
      *
      * @return bool false when the run should stop, having said why
      */
@@ -460,20 +454,18 @@ class ReleaseCommand extends AbstractReleaseCommand
             return !$this->problem("{$this->sha} has no {$prefix}, but .gitsplit.yml splits it");
         }
 
-        $url = "https://api.github.com/repos/{$repository->downstream}/commits?sha={$this->source_branch}&per_page=100";
-        if ($repository->latestRelease !== null && !$this->force) {
-            $url .= '&since=' . $this->since($repository->latestRelease);
-        }
-        $response = $this->fetch($url);
-        if ($response->getStatusCode() !== 200) {
-            return !$this->problem("Could not list the commits of {$repository->downstream} {$this->source_branch} ({$response->getStatusCode()})");
-        }
-        foreach (json_decode($response->getBody()->getContents()) as $commit) {
-            if ($commit->commit->tree->sha === $tree) {
-                $this->splitCommits[(string) $repository->downstream] = $commit->sha;
+        $since = $repository->latestRelease !== null && !$this->force ? $this->since($repository->latestRelease) : null;
 
-                return true;
+        try {
+            foreach ($this->github->commits((string) $repository->downstream, $this->source_branch, $since) as $commit) {
+                if ($commit['tree'] === $tree) {
+                    $this->splitCommits[(string) $repository->downstream] = $commit['sha'];
+
+                    return true;
+                }
             }
+        } catch (GitHubException $e) {
+            return !$this->problem("Could not list the commits of {$repository->downstream} {$this->source_branch}: {$e->getMessage()}");
         }
 
         return !$this->problem(sprintf(
@@ -604,18 +596,18 @@ class ReleaseCommand extends AbstractReleaseCommand
             return $diff;
         }
         $target = $this->target($repository);
-        $url = "https://api.github.com/repos/{$repository->downstream}/compare/{$repository->latestRelease->version}...{$target}";
-        $response = $this->fetch($url);
-        if ($response->getStatusCode() !== 200) {
-            $message = "Failed to compare {$repository->downstream} {$repository->latestRelease->version} with {$target} ({$response->getStatusCode()})";
+
+        try {
+            $commits = $this->github->compare((string) $repository->downstream, $repository->latestRelease->version, $target);
+        } catch (GitHubException $e) {
+            $message = "Failed to compare {$repository->downstream} {$repository->latestRelease->version} with {$target}: {$e->getMessage()}";
 
             return $this->problem($message) ? null : $diff;
         }
-        $data = json_decode($response->getBody()->getContents());
 
-        foreach ($data->commits as $c) {
+        foreach ($commits as $c) {
             $commit = new Commit();
-            $commit->message = $c->commit->message;
+            $commit->message = $c['message'];
             $diff->commits[] = $commit;
         }
 
@@ -744,7 +736,7 @@ class ReleaseCommand extends AbstractReleaseCommand
     private function do_release(Repository $repository, Release $release, bool $makeLatest, bool $isDraft): bool
     {
         $url = "https://api.github.com/repos/{$repository->downstream}/releases";
-        $body = json_encode([
+        $body = [
             'tag_name' => $release->version,
             'target_commitish' => $this->target($repository),
             'name' => "Release {$release->version}",
@@ -753,8 +745,7 @@ class ReleaseCommand extends AbstractReleaseCommand
             'prerelease' => false,
             'generate_release_notes' => false,
             'make_latest' => $makeLatest ? 'true' : 'false',
-        ]);
-        $this->output->isDebug() && $this->output->writeln($body);
+        ];
         $made = [
             'repository' => (string) $repository->downstream,
             'version' => $release->version,
@@ -769,17 +760,17 @@ class ReleaseCommand extends AbstractReleaseCommand
 
             return true;
         }
-        $response = $this->post($url, $body);
-        if ($response->getStatusCode() !== 201) {
-            $this->output->writeln("<error>[ERROR] {$repository->downstream} {$release->version} ({$response->getStatusCode()}) {$response->getBody()->getContents()}</error>");
+
+        try {
+            $made['url'] = $this->github->createRelease((string) $repository->downstream, $body);
+        } catch (GitHubException $e) {
+            $this->output->writeln("<error>[ERROR] {$repository->downstream} {$release->version}: {$e->getMessage()}</error>");
 
             return false;
         }
-        $json = json_decode($response->getBody()->getContents());
         $this->released[] = $repository->downstream->project;
-        $made['url'] = $json->html_url;
         $this->releases[] = $made;
-        $this->output->writeln("<info>[CREATED] {$repository->downstream} {$release->version}: </info> {$json->html_url}");
+        $this->output->writeln("<info>[CREATED] {$repository->downstream} {$release->version}: </info> {$made['url']}");
 
         return true;
     }

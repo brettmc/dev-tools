@@ -5,11 +5,10 @@ declare(strict_types=1);
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
 use DOMDocument;
-use Http\Discovery\Psr18ClientDiscovery;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\Project;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
-use Psr\Http\Client\ClientInterface;
 use RuntimeException;
 use SimpleXMLElement;
 use Symfony\Component\Console\Command\Command;
@@ -26,15 +25,11 @@ class PeclCommand extends AbstractReleaseCommand
     private const REPO = 'opentelemetry-php-instrumentation';
     private const REPOSITORY = self::OWNER . '/' . self::REPO;
     private const PACKAGE_XML = 'ext/package.xml';
-    private ?ClientInterface $clientOverride;
     private GitRunner $git;
 
-    public function __construct(?ClientInterface $client = null, ?GitRunner $git = null)
+    public function __construct(?GitHub $github = null, ?GitRunner $git = null)
     {
-        parent::__construct();
-        //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
-        //when no PSR-18 client is installed, which should not happen merely by listing the commands
-        $this->clientOverride = $client;
+        parent::__construct($github);
         $this->git = $git ?? new GitRunner();
     }
 
@@ -54,7 +49,6 @@ class PeclCommand extends AbstractReleaseCommand
     {
         $force = $input->getOption('force');
         $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
-        $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
         $this->registerInputAndOutput($input, $output);
         $packageXml = $path . '/' . self::PACKAGE_XML;
         if (!is_file($packageXml)) {

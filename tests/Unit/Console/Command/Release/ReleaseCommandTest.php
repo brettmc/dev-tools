@@ -6,6 +6,7 @@ namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Release;
 
 use Nyholm\Psr7\Response;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseCommand;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
@@ -62,6 +63,8 @@ class ReleaseCommandTest extends TestCase
     private bool $shallow = false;
     /** git's error when reading the commits of a prefix */
     private ?string $logError = null;
+    /** a bug met while reading the commits of a prefix */
+    private ?\Error $logCrash = null;
     /** whether the monorepo has commits to each package since its latest release */
     private bool $upstreamCommits = true;
     /** @var list<array{sha: string, author: string, message: string}> the commits to each package, when it has some */
@@ -74,6 +77,14 @@ class ReleaseCommandTest extends TestCase
     private int $compareStatus = 200;
     /** status of the latest release lookups */
     private int $latestStatus = 200;
+    /** status of the commit list of each split */
+    private int $splitStatus = 200;
+    /** @var list<string> branches of the monorepo on GitHub */
+    private array $branches = ['main', '1.x'];
+    /** commits in each page of the split's commit list and of the compare */
+    private int $pageSize = 100;
+    /** @var list<string> URL fragments of the requests answered with something other than JSON */
+    private array $broken = [];
     /** @var resource */
     private $out;
     /** @var resource */
@@ -273,7 +284,7 @@ class ReleaseCommandTest extends TestCase
 
         $this->assertSame(1, $status);
         $this->assertSame(['opentelemetry-php/api' => '1.11.0'], $this->tags());
-        $this->assertStringContainsString('(422)', $this->output());
+        $this->assertStringContainsString('422 Validation Failed', $this->output());
     }
 
     public function test_release_targets_the_newest_split_commit_with_the_tree_of_the_sha(): void
@@ -295,7 +306,7 @@ class ReleaseCommandTest extends TestCase
         $status = $this->run_release('', [], false);
 
         $this->assertSame(0, $status);
-        $this->assertContains('https://api.github.com/repos/opentelemetry-php/sem-conv/compare/1.44.0...sem-conv-0', array_column($this->requests, 'url'));
+        $this->assertContains('https://api.github.com/repos/opentelemetry-php/sem-conv/compare/1.44.0...sem-conv-0?per_page=100', array_column($this->requests, 'url'));
     }
 
     public function test_split_history_is_walked_from_the_latest_release(): void
@@ -349,7 +360,7 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame(0, $status);
         $urls = array_column($this->requests, 'url');
         $this->assertSame([], preg_grep('#/opentelemetry-php/compare/#', $urls));
-        $this->assertCount(1, preg_grep('#/git/matching-refs/#', $urls));
+        $this->assertCount(1, preg_grep('#/git/ref/#', $urls));
         $this->assertSame('1.45.0', $this->created()['tag_name']);
     }
 
@@ -427,7 +438,7 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame(0, $status);
         $this->assertSame(['opentelemetry-php/api' => '1.11.0', 'opentelemetry-php/sdk' => '1.16.0'], $this->tags());
         $this->assertSame([['abc123', 'src/SDK'], ['abc123', 'src/API']], $this->treeReads);
-        $this->assertCount(1, preg_grep('#/git/matching-refs/#', array_column($this->requests, 'url')));
+        $this->assertCount(1, preg_grep('#/git/ref/#', array_column($this->requests, 'url')));
     }
 
     public function test_rerun_after_a_partial_run_tags_only_the_rest(): void
@@ -484,7 +495,7 @@ class ReleaseCommandTest extends TestCase
         $status = $this->run_release('', ['--repo' => null], false);
 
         $this->assertSame(0, $status);
-        $this->assertSame('https://api.github.com/repos/open-telemetry/opentelemetry-php-contrib/git/matching-refs/heads/main', $this->requests[0]['url']);
+        $this->assertSame('https://api.github.com/repos/open-telemetry/opentelemetry-php-contrib/git/ref/heads/main', $this->requests[0]['url']);
         $this->assertSame('1.45.0', $this->created()['tag_name']);
     }
 
@@ -590,7 +601,7 @@ class ReleaseCommandTest extends TestCase
 
         $this->assertSame(1, $status);
         $this->assertCount(1, $this->requests);
-        $this->assertStringContainsString('/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/main', $this->requests[0]['url']);
+        $this->assertStringContainsString('/repos/open-telemetry/opentelemetry-php/git/ref/heads/main', $this->requests[0]['url']);
         $this->assertStringContainsString('old456', $this->output());
         $this->assertStringContainsString('abc123', $this->output());
     }
@@ -891,7 +902,7 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame(1, $status);
         $this->assertFalse($this->json()['completed']);
         $this->assertSame(['opentelemetry-php/api'], array_column($this->json()['releases'], 'repository'));
-        $this->assertStringContainsString('(422)', $this->errors());
+        $this->assertStringContainsString('422 Validation Failed', $this->errors());
     }
 
     public function test_json_format_sends_errors_to_stderr(): void
@@ -952,7 +963,103 @@ class ReleaseCommandTest extends TestCase
 
         $this->assertSame(1, $status);
         $this->assertFalse($this->json()['completed']);
-        $this->assertStringContainsString('Error retrieving latest release', $this->errors());
+        $this->assertStringContainsString('releases/latest: 500 Server Error', $this->errors());
+    }
+
+    public function test_json_format_is_printed_when_the_run_crashes(): void
+    {
+        $this->logCrash = new \TypeError('Cannot assign null to property');
+
+        $status = $this->run_release('', ['--format' => 'json'], false);
+
+        $this->assertSame(1, $status);
+        $this->assertFalse($this->json()['completed']);
+        $this->assertStringContainsString('Cannot assign null to property', $this->errors());
+    }
+
+    public function test_split_commit_on_a_later_page_is_found(): void
+    {
+        $this->splitMessages = ['Add attributes', 'Merged after the release', 'Also merged after'];
+        $this->splitMatch = 0;
+        $this->pageSize = 1;
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(0, $status);
+        $this->assertSame('sem-conv-0', $this->created()['target_commitish']);
+    }
+
+    public function test_every_page_of_the_compare_is_checked(): void
+    {
+        $this->splitMessages = ['Add attributes', 'Pushed straight to the split'];
+        $this->pageSize = 1;
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('Pushed straight to the split', $this->output());
+    }
+
+    public function test_failed_split_commit_list_stops_the_run(): void
+    {
+        $this->splitStatus = 403;
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('403 API rate limit exceeded', $this->output());
+    }
+
+    public function test_json_format_is_printed_when_the_split_commit_list_fails(): void
+    {
+        $this->splitStatus = 403;
+
+        $status = $this->run_release('', ['--format' => 'json'], false);
+
+        $this->assertSame(1, $status);
+        $this->assertFalse($this->json()['completed']);
+        $this->assertStringContainsString('403 API rate limit exceeded', $this->errors());
+    }
+
+    /**
+     * @dataProvider endpoints
+     */
+    public function test_bad_json_stops_the_run_naming_the_url(string $fragment): void
+    {
+        $this->broken = [$fragment];
+
+        $status = $this->run_release('', ['--format' => 'json'], false);
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertFalse($this->json()['completed']);
+        $this->assertMatchesRegularExpression('#https://api\.github\.com/repos/\S*' . preg_quote($fragment, '#') . '#', $this->errors());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function endpoints(): array
+    {
+        return [
+            'branch' => ['/git/ref'],
+            'latest release' => ['/releases/latest'],
+            'split commits' => ['/commits?sha='],
+            'compare' => ['/compare/'],
+        ];
+    }
+
+    public function test_branch_is_looked_up_by_its_exact_name(): void
+    {
+        $this->branches = ['main', '1.x-old'];
+
+        $status = $this->run_release("1.44.1\nn\nn\n", ['--branch' => '1.x']);
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('git/ref/heads/1.x: 404', $this->output());
     }
 
     public function test_unknown_format_fails_before_calling_github(): void
@@ -1159,6 +1266,9 @@ class ReleaseCommandTest extends TestCase
             if ($this->logError !== null) {
                 throw new RuntimeException($this->logError);
             }
+            if ($this->logCrash !== null) {
+                throw $this->logCrash;
+            }
 
             return $this->upstreamCommits ? $this->log : [];
         });
@@ -1170,7 +1280,7 @@ class ReleaseCommandTest extends TestCase
                 : "tree-{$prefix}";
         });
 
-        return new ReleaseCommand($client, $reader, $git);
+        return new ReleaseCommand(new GitHub($client), $reader, $git);
     }
 
     private function respond(string $method, string $url): Response
@@ -1187,20 +1297,35 @@ class ReleaseCommandTest extends TestCase
                 ? $json(['html_url' => 'https://github.com/x/y/releases/1'], 201)
                 : $json(['message' => 'Validation Failed'], $status);
         }
+        foreach ($this->broken as $fragment) {
+            if (str_contains($url, $fragment)) {
+                return new Response(200, [], '<html>');
+            }
+        }
+        //matches by prefix, so a command that asks it for 1.x is answered with 1.x-old
         if (preg_match('#/git/matching-refs/heads/(.+)$#', $url, $m) === 1) {
-            $tip = count($this->tips) > 1 ? array_shift($this->tips) : $this->tips[0];
-
-            return $json([['ref' => "refs/heads/{$m[1]}", 'object' => ['sha' => $tip]]]);
+            return $json(array_values(array_map(
+                fn (string $branch): array => ['ref' => "refs/heads/{$branch}", 'object' => ['sha' => $this->tip()]],
+                array_filter($this->branches, static fn (string $branch): bool => str_starts_with($branch, $m[1])),
+            )));
+        }
+        if (preg_match('#/git/ref/heads/(.+)$#', $url, $m) === 1) {
+            return in_array($m[1], $this->branches, true)
+                ? $json(['ref' => "refs/heads/{$m[1]}", 'object' => ['sha' => $this->tip()]])
+                : $json(['message' => 'Not Found'], 404);
         }
         $match = $this->splitMatch ?? count($this->splitMessages) - 1;
         foreach ($this->splits() as $project => [$prefix, $latest]) {
+            $commit = static fn (string $message): array => ['sha' => 'abc', 'commit' => ['message' => $message, 'tree' => ['sha' => 'any']]];
             $response = match (true) {
+                str_ends_with($url, "/repos/opentelemetry-php/{$project}") => $json(['full_name' => "opentelemetry-php/{$project}"]),
                 str_contains($url, "/{$project}/releases/latest") => $this->latestStatus !== 200
                     ? $json(['message' => 'Server Error'], $this->latestStatus)
                     : $json(['tag_name' => $latest, 'created_at' => '2026-01-01T00:00:00Z']),
+                str_contains($url, "/{$project}/commits?sha=") && $this->splitStatus !== 200 => $json(['message' => 'API rate limit exceeded'], $this->splitStatus),
                 //without since, the walk reaches the released commit, whose tree is the checkout's
                 //when nothing has changed since
-                str_contains($url, "/{$project}/commits?sha=") => $json(array_merge(array_reverse(array_map(
+                str_contains($url, "/{$project}/commits?sha=") => $this->page($url, null, array_merge(array_reverse(array_map(
                     fn (string $message, int $i): array => [
                         'sha' => "{$project}-{$i}",
                         'commit' => ['message' => $message, 'tree' => ['sha' => $this->splitPushed && $i === $match ? "tree-{$prefix}" : "other-{$i}"]],
@@ -1211,14 +1336,11 @@ class ReleaseCommandTest extends TestCase
                     ['sha' => "{$project}-released", 'commit' => ['message' => 'Released', 'tree' => ['sha' => $this->upstreamCommits ? 'released' : "tree-{$prefix}"]]],
                 ])),
                 str_contains($url, "/{$project}/compare/") && $this->compareStatus !== 200 => $json(['message' => 'Server Error'], $this->compareStatus),
-                preg_match("#/{$project}/compare/[^/]+\\.\\.\\.{$project}-(\\d+)$#", $url, $m) === 1 => $json(['commits' => array_map(
-                    static fn (string $message): array => ['sha' => 'abc', 'commit' => ['message' => $message]],
+                preg_match("#/{$project}/compare/[^/?]+\\.\\.\\.{$project}-(\\d+)(\\?|$)#", $url, $m) === 1 => $this->page($url, 'commits', array_map(
+                    $commit,
                     array_slice($this->splitMessages, 0, (int) $m[1] + 1)
-                )]),
-                str_contains($url, "/{$project}/compare/") => $json(['commits' => array_map(
-                    static fn (string $message): array => ['sha' => 'abc', 'commit' => ['message' => $message]],
-                    $this->splitMessages
-                )]),
+                )),
+                str_contains($url, "/{$project}/compare/") => $this->page($url, 'commits', array_map($commit, $this->splitMessages)),
                 default => null,
             };
             if ($response !== null) {
@@ -1227,5 +1349,29 @@ class ReleaseCommandTest extends TestCase
         }
 
         return new Response(404);
+    }
+
+    private function tip(): string
+    {
+        return count($this->tips) > 1 ? array_shift($this->tips) : $this->tips[0];
+    }
+
+    /**
+     * One page of $items, as GitHub pages them: `page` in the query, and a Link to the next.
+     *
+     * @param ?string $key the field holding the list, or null when the response is the list
+     * @param list<mixed> $items
+     */
+    private function page(string $url, ?string $key, array $items): Response
+    {
+        $page = preg_match('/[?&]page=(\d+)/', $url, $m) === 1 ? (int) $m[1] : 1;
+        $slice = array_slice($items, ($page - 1) * $this->pageSize, $this->pageSize);
+        $headers = [];
+        if (count($items) > $page * $this->pageSize) {
+            $next = preg_replace('/&page=\d+/', '', $url) . '&page=' . ($page + 1);
+            $headers['Link'] = "<{$next}>; rel=\"next\"";
+        }
+
+        return new Response(200, $headers, json_encode($key === null ? $slice : [$key => $slice]));
     }
 }

@@ -4,18 +4,17 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
-use Nyholm\Psr7\Request;
 use OpenTelemetry\DevTools\Console\Command\BaseCommand;
 use OpenTelemetry\DevTools\Console\Release\Commit;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\Project;
 use OpenTelemetry\DevTools\Console\Release\Release;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Composer\ConfigAttributes;
 use OpenTelemetry\DevTools\Package\Composer\PackageAttributeResolver;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
-use Psr\Http\Client\ClientInterface;
-use Psr\Http\Message\ResponseInterface;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Yaml\Parser;
 
 abstract class AbstractReleaseCommand extends BaseCommand
@@ -31,11 +30,17 @@ abstract class AbstractReleaseCommand extends BaseCommand
         'open-telemetry/opentelemetry-php' => 'open-telemetry/opentelemetry',
         'open-telemetry/opentelemetry-php-contrib' => 'open-telemetry/opentelemetry-php-contrib',
     ];
-    protected ClientInterface $client;
+    protected GitHub $github;
     protected Parser $parser;
     protected ?string $token = null;
     protected bool $dry_run = false;
     protected string $source_branch = 'main';
+
+    public function __construct(?GitHub $github = null)
+    {
+        parent::__construct();
+        $this->github = $github ?? new GitHub();
+    }
 
     /**
      * The token from --token, or else GITHUB_TOKEN. Read in execute(), as interact() is skipped
@@ -43,62 +48,27 @@ abstract class AbstractReleaseCommand extends BaseCommand
      */
     protected function token(InputInterface $input): ?string
     {
-        return $input->getOption('token') ?: (getenv('GITHUB_TOKEN') ?: null);
+        $token = $input->getOption('token') ?: (getenv('GITHUB_TOKEN') ?: null);
+        $this->github->authenticate($token);
+
+        return $token;
     }
 
-    protected function headers(): array
+    #[\Override]
+    protected function registerOutput(OutputInterface $output): void
     {
-        $headers = [
-            'Accept' => 'application/vnd.github+json',
-            'User-Agent' => 'php-' . PHP_VERSION,
-            'X-GitHub-Api-Version' => '2022-11-28',
-        ];
-        if ($this->token) {
-            $headers['Authorization'] ="Bearer {$this->token}";
-        }
-
-        return $headers;
-    }
-
-    protected function fetch(string $url): ResponseInterface
-    {
-        $request = new Request('GET', $url, $this->headers());
-        $this->output->isVeryVerbose() && $this->output->writeln("[HTTP] GET {$url}");
-
-        return $this->client->sendRequest($request);
-    }
-
-    protected function post(string $url, string $body): ResponseInterface
-    {
-        $request = new Request('POST', $url, $this->headers(), $body);
-        $this->output->isVerbose() && $this->output->writeln("[HTTP] POST {$url}");
-        $this->output->isVeryVerbose() && $this->output->writeln("[HTTP body] {$body}");
-
-        return $this->client->sendRequest($request);
+        parent::registerOutput($output);
+        $this->github->trace($output);
     }
 
     protected function get_latest_release(Repository $repository): ?Release
     {
-        $release_url = "https://api.github.com/repos/{$repository->downstream}/releases/latest";
-
-        $response = $this->fetch($release_url);
-        if ($response->getStatusCode() === 404) {
+        $release = $this->github->latestRelease((string) $repository->downstream);
+        if ($release === null) {
             $this->output->writeln("<info>[{$repository->downstream}] No latest release found</info>");
 
             return null;
         }
-        if ($response->getStatusCode() !== 200) {
-            $this->output->writeln("<error>({$response->getStatusCode()}) {$response->getBody()}</error>");
-
-            throw new \Exception("Error retrieving latest release for {$repository->downstream}: " . $response->getReasonPhrase(), $response->getStatusCode());
-        }
-
-        $data = json_decode($response->getBody()->getContents());
-
-        $release = new Release();
-        //created_at is when the tag was created, which may be well before the release was published
-        $release->timestamp = $data->created_at;
-        $release->version = $data->tag_name;
         $this->output->isVerbose() && $this->output->writeln("[INFO] Latest release of {$repository->downstream} is {$release}");
 
         return $release;
@@ -135,36 +105,16 @@ abstract class AbstractReleaseCommand extends BaseCommand
         return $commits;
     }
 
-    protected function get_sha_for_branch(Repository $repository, string $branch): string
-    {
-        $refs_url = "https://api.github.com/repos/{$repository->upstream}/git/matching-refs/heads/{$branch}";
-        $response = $this->fetch($refs_url);
-        if ($response->getStatusCode() !== 200) {
-            $this->output->isDebug() && $this->output->writeln($response->getBody()->getContents());
-
-            throw new \Exception("Error {$response->getStatusCode()} retrieving branch refs for {$branch}");
-        }
-        $json = json_decode($response->getBody()->getContents());
-        if (count($json) === 0) {
-            throw new \RuntimeException("No matching refs found for branch: {$branch}");
-        }
-        $ref = $json[0];
-
-        $this->output->isVerbose() && $this->output->writeln("Found ref: {$ref->ref} SHA: {$ref->object->sha}");
-
-        return $ref->object->sha;
-    }
-
     /**
      * The tip of the branch being released from, on GitHub. A local remote could be a fork, or
      * named anything.
      */
     protected function branch_tip(string $upstream): string
     {
-        $repository = new Repository();
-        $repository->upstream = new Project($upstream);
+        $sha = $this->github->branchSha($upstream, $this->source_branch);
+        $this->output->isVerbose() && $this->output->writeln("[INFO] {$upstream} {$this->source_branch} is at {$sha}");
 
-        return $this->get_sha_for_branch($repository, $this->source_branch);
+        return $sha;
     }
 
     /**

@@ -6,6 +6,7 @@ namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Release;
 
 use Nyholm\Psr7\Response;
 use OpenTelemetry\DevTools\Console\Command\Release\PeclCommand;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Tests\Unit\Behavior\UsesVfsTrait;
 use PHPUnit\Framework\TestCase;
@@ -71,7 +72,7 @@ class PeclCommandTest extends TestCase
             return $this->logError === null ? $this->log : throw new RuntimeException($this->logError);
         });
 
-        $this->tester = new CommandTester(new PeclCommand($client, $git));
+        $this->tester = new CommandTester(new PeclCommand(new GitHub($client), $git));
     }
 
     public function test_package_xml_and_commits_are_read_from_the_checkout(): void

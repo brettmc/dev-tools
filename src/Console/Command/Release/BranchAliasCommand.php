@@ -4,11 +4,10 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
-use Http\Discovery\Psr18ClientDiscovery;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasStatus;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasUpdater;
-use Psr\Http\Client\ClientInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
@@ -26,18 +25,14 @@ class BranchAliasCommand extends AbstractReleaseCommand
 {
 
     private BranchAliasUpdater $updater;
-    private ?ClientInterface $clientOverride;
     private string $branch;
     /** Packages this command was asked to update but could not, which makes the run a failure. */
     private int $failures = 0;
 
-    public function __construct(?BranchAliasUpdater $updater = null, ?ClientInterface $client = null)
+    public function __construct(?BranchAliasUpdater $updater = null, ?GitHub $github = null)
     {
-        parent::__construct();
+        parent::__construct($github);
         $this->updater = $updater ?? new BranchAliasUpdater();
-        //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
-        //when no PSR-18 client is installed, which should not happen merely by listing the commands
-        $this->clientOverride = $client;
     }
 
     #[\Override]
@@ -63,7 +58,6 @@ class BranchAliasCommand extends AbstractReleaseCommand
         $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
         $this->registerInputAndOutput($input, $output);
 
-        $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
         $this->parser = new Parser();
 
         try {

@@ -6,6 +6,7 @@ namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Release;
 
 use Nyholm\Psr7\Response;
 use OpenTelemetry\DevTools\Console\Command\Release\BranchAliasCommand;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Tests\Unit\Behavior\UsesVfsTrait;
 use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
@@ -197,7 +198,7 @@ class BranchAliasCommandTest extends TestCase
             return $response;
         });
 
-        $this->commandTester = new CommandTester(new BranchAliasCommand(null, $client));
+        $this->commandTester = new CommandTester(new BranchAliasCommand(null, new GitHub($client)));
 
         return $this->execute($path, $options, $interactive);
     }
