@@ -118,9 +118,9 @@ abstract class AbstractReleaseCommand extends BaseCommand
     }
 
     /**
-     * Github's `since` filter is inclusive, so advance one second past the tag to avoid listing the
-     * already-released commit. This happens with lightweight tags, where the tag's timestamp is the
-     * timestamp of the commit it points at.
+     * Github's `since` filter is inclusive, as is `git log --since`, so advance one second past the
+     * tag to avoid listing the already-released commit. This happens with lightweight tags, where
+     * the tag's timestamp is the timestamp of the commit it points at.
      */
     protected function since(Release $release): string
     {
@@ -130,23 +130,6 @@ abstract class AbstractReleaseCommand extends BaseCommand
             ->format('Y-m-d\TH:i:s\Z');
     }
 
-    /**
-     * @param ?string $sha the commit to list back from, rather than the default branch
-     * @return array<Commit>
-     */
-    protected function get_upstream_unreleased_commits(Repository $repository, ?string $sha = null): array
-    {
-        $commits_url = "https://api.github.com/repos/{$repository->upstream}/commits?path={$repository->upstream->path}";
-        $latestRelease = $repository->latestRelease;
-        if ($latestRelease !== null) {
-            $commits_url .= '&since=' . $this->since($latestRelease);
-        }
-        if ($sha !== null) {
-            $commits_url .= "&sha={$sha}";
-        }
-
-        return $this->get_commits($commits_url, $repository);
-    }
     private function get_commits(string $url, Repository $repository): array
     {
         $response = $this->fetch($url);

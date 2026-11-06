@@ -176,7 +176,9 @@ class ReleaseCommand extends AbstractReleaseCommand
         $bar->start();
         foreach ($found as $repository) {
             $bar->setMessage($repository->downstream->project);
-            $repository = $this->populate_release_details($repository);
+            if (!$this->populate_release_details($repository)) {
+                return Command::FAILURE;
+            }
             if (!$this->to_be_released($repository)) {
                 //publish_repositories() skips it; it is kept for the tag order of the rest
                 $repository->diff = new Diff();
@@ -243,16 +245,52 @@ class ReleaseCommand extends AbstractReleaseCommand
      * 1. latest release
      * 2. unreleased commits to upstream path, since date of last release, up to the commit released
      * 3. its changelog in the checkout
+     *
+     * @return bool false when the run should stop, having said why
      */
-    private function populate_release_details(Repository $repository): Repository
+    private function populate_release_details(Repository $repository): bool
     {
         $this->output->isVerbose() && $this->output->writeln("<info>Processing: {$repository->downstream}</info>");
 
         $repository->latestRelease = $this->get_latest_release($repository);
-        $repository->commits = $this->get_upstream_unreleased_commits($repository, $this->sha);
+        $commits = $this->unreleased_commits($repository);
+        if ($commits === null) {
+            return false;
+        }
+        $repository->commits = $commits;
         $this->changelogs[(string) $repository->downstream] = $this->read_changelog($repository);
 
-        return $repository;
+        return true;
+    }
+
+    /**
+     * The commits to the package's prefix in the checkout since its latest release, up to the
+     * commit being released. The checkout has the full history, as read_checkout() refuses a
+     * shallow one.
+     *
+     * @return array<Commit>|null null when the run should stop, having said why
+     */
+    private function unreleased_commits(Repository $repository): ?array
+    {
+        assert($this->sha !== null);
+        $since = $repository->latestRelease === null ? null : $this->since($repository->latestRelease);
+
+        try {
+            $log = $this->git->log($this->checkoutPath, $this->sha, $repository->upstream->path, $since);
+        } catch (\RuntimeException $e) {
+            return $this->problem("The commits to {$repository->upstream->path} of {$this->sha} cannot be read by git: {$e->getMessage()}") ? null : [];
+        }
+
+        $commits = [];
+        foreach ($log as $entry) {
+            $commit = new Commit();
+            $commit->sha = $entry['sha'];
+            $commit->message = $entry['message'];
+            $commit->pullRequest = $this->get_pull_request($repository, $commit);
+            $commits[] = $commit;
+        }
+
+        return $commits;
     }
 
     /**
@@ -265,7 +303,8 @@ class ReleaseCommand extends AbstractReleaseCommand
      */
     private function read_checkout(string $path, ?string $upstream): ?array
     {
-        if ($this->find_split_packages($path, null) === null) {
+        $splits = $this->find_split_packages($path, null);
+        if ($splits === null) {
             return null;
         }
         $name = $this->root_package_name($path);
@@ -297,7 +336,19 @@ class ReleaseCommand extends AbstractReleaseCommand
 
         try {
             $head = $this->git->head($path);
-            $changes = $this->git->changes($path);
+            //git log stops without a word at the shallow boundary, so even a dry run would list
+            //too few commits
+            if ($this->git->isShallow($path)) {
+                $this->output->writeln("<error>{$path} is a shallow clone, so its history may not reach each package's latest release. Clone it in full; with actions/checkout, set `fetch-depth: 0`.</error>");
+
+                return null;
+            }
+            //an untracked file under a prefix is read as if it were in the release: a CHANGELOG.md
+            //for the notes, or a provider for the tag order
+            $changes = [
+                ...$this->git->changes($path),
+                ...$this->git->untracked($path, array_map(static fn (Repository $split): string => $split->upstream->path, $splits)),
+            ];
             if ($changes !== [] && $this->problem("{$path} has uncommitted changes, which would not be in the release:\n  " . implode("\n  ", $changes))) {
                 return null;
             }
@@ -360,17 +411,35 @@ class ReleaseCommand extends AbstractReleaseCommand
             return false;
         }
 
-        //behind or identical: every commit of $sha is on the branch
-        $response = $this->fetch("https://api.github.com/repos/{$checkout['upstream']}/compare/{$this->source_branch}...{$sha}");
-        $status = $response->getStatusCode() === 200 ? json_decode($response->getBody()->getContents())->status ?? null : null;
+        try {
+            $tip = $this->branch_tip($checkout['upstream']);
+        } catch (\Exception $e) {
+            $this->output->writeln("<error>{$e->getMessage()}</error>");
 
-        return in_array($status, ['behind', 'identical'], true) || !$this->problem(sprintf(
-            '%s is not on %s %s (%s). Release a commit that has been merged.',
-            $sha,
-            $checkout['upstream'],
-            $this->source_branch,
-            $status ?? "HTTP {$response->getStatusCode()}",
-        ));
+            return false;
+        }
+
+        try {
+            if (!$this->git->hasCommit($checkout['path'], $tip)) {
+                return !$this->problem(sprintf(
+                    '%s does not have %s %s at %s. Fetch it from %s and run release:run again.',
+                    $checkout['path'],
+                    $checkout['upstream'],
+                    $this->source_branch,
+                    $tip,
+                    "https://github.com/{$checkout['upstream']}",
+                ));
+            }
+
+            return $this->git->isAncestor($checkout['path'], $sha, $tip) || !$this->problem(sprintf(
+                '%s is not on %s %s. Release a commit that has been merged.',
+                $sha,
+                $checkout['upstream'],
+                $this->source_branch,
+            ));
+        } catch (\RuntimeException $e) {
+            return !$this->problem("{$checkout['path']} cannot be read by git: {$e->getMessage()}");
+        }
     }
 
     /**
@@ -638,10 +707,6 @@ class ReleaseCommand extends AbstractReleaseCommand
             $fromChangelog,
         );
 
-        if ($fromChangelog !== null && !$this->split_has_section($repository, $newVersion)) {
-            return false;
-        }
-
         return $this->do_release($repository, $release, $makeLatest, $isDraft);
     }
 
@@ -657,32 +722,6 @@ class ReleaseCommand extends AbstractReleaseCommand
         }
 
         return new ChangelogReleases((string) file_get_contents($file));
-    }
-
-    /**
-     * Whether the commit to be tagged has the section for $version in its CHANGELOG.md. Read through
-     * the contents API rather than raw.githubusercontent.com, which caches for minutes.
-     */
-    private function split_has_section(Repository $repository, string $version): bool
-    {
-        $url = "https://api.github.com/repos/{$repository->downstream}/contents/CHANGELOG.md?ref={$this->target($repository)}";
-        $response = $this->fetch($url);
-        $section = null;
-        if ($response->getStatusCode() === 200) {
-            $data = json_decode($response->getBody()->getContents());
-            $markdown = base64_decode((string) ($data->content ?? ''), true);
-            $section = $markdown === false ? null : (new ChangelogReleases($markdown))->notes($version);
-        }
-        if ($section !== null) {
-            return true;
-        }
-
-        return !$this->problem(sprintf(
-            '%s %s has no %s section in CHANGELOG.md yet. gitsplit may not have pushed the merge; wait for it and run release:run again.',
-            $repository->downstream,
-            $this->source_branch,
-            $version,
-        ));
     }
 
     /**

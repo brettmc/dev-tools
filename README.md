@@ -48,23 +48,38 @@ Options:
 
 #### Check the checkout
 
-The packages, their changelogs and their tag order are all read from the checkout. Core's service
-providers declare `#[PackageDependency]` on packages released in the same run, and the order those need
-can only be read from a checkout. The command fails before any GitHub call when `--path` is missing, is
-not a checkout of the repo being released, has uncommitted changes to tracked files, or has no `vendor/`.
+The packages, their commits, their changelogs and their tag order are all read from the checkout. Core's
+service providers declare `#[PackageDependency]` on packages released in the same run, and the order
+those need can only be read from a checkout. The command fails before any GitHub call when `--path`:
+
+* is missing, or is not a checkout of the repo being released
+* is a shallow clone, as the commits of each package are read back to its latest release
+* has uncommitted changes to tracked files
+* has untracked files in a package's directory, such as a new `CHANGELOG.md`, which would be read as if
+  they were in the release
+* has no `vendor/`
 
 The checkout's `HEAD` must be the commit being released. That is `--sha`, which must be on `--branch` on
-GitHub. Without `--sha`, it is the tip of `--branch` as the run starts, so pull before releasing. With
-`--dry-run`, these checks warn instead.
+GitHub: the checkout must have the tip of `--branch`, so fetch first. Without `--sha`, it is the tip of
+`--branch` as the run starts, so pull before releasing. With `--dry-run`, these checks warn instead,
+except for a shallow clone.
+
+`actions/checkout` makes a shallow clone unless told not to:
+
+```yaml
+- uses: actions/checkout@v5
+  with:
+    fetch-depth: 0
+```
 
 #### Tag the split commit that matches
 
 gitsplit rewrites every commit it pushes to a split repository, so the split commit to tag is found by
 content. For each package with changes, the command reads the tree of the package's directory in the
 commit being released, then walks the split's `--branch` history back to its latest release, at most
-100 commits, for the commit with the same tree. That commit is tagged, and the downstream diffs and the
-split's `CHANGELOG.md` are read at it. With `--force`, the walk includes the latest release, as a
-package without changes has its tree.
+100 commits, for the commit with the same tree. That commit is tagged, and the downstream diffs are
+read at it. The same tree means the split's `CHANGELOG.md` is the checkout's. With `--force`, the walk
+includes the latest release, as a package without changes has its tree.
 
 Nothing reads the moving branch tip after the run starts. A merge during the run is neither tagged nor a
 reason to stop.
@@ -77,7 +92,7 @@ The script will then:
 * read `.gitsplit.yml` from the checkout
 * process yaml to determine downstream (read-only) repositories and their path association in upstream (eg open-telemetry/opentelemetry-php:/src/API -> opentelemetry-php/api)
 * find latest release in downstream
-* find changes in upstream newer than the latest release, up to the commit being released, and their associated pull request
+* find the commits to the package's directory in the checkout newer than the latest release, up to the commit being released, and their associated pull request
 * retrieve diffs from downstream between latest tag and the split commit
 * check that upstream changes match downstream diffs
 

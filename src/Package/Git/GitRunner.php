@@ -39,6 +39,38 @@ class GitRunner
     }
 
     /**
+     * Untracked files under $prefixes, as `git status --porcelain` lines. Ignored files are not
+     * listed. Files outside every prefix are not either: they are not in any package.
+     *
+     * @param list<string> $prefixes
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout
+     * @return list<string>
+     */
+    public function untracked(string $path, array $prefixes): array
+    {
+        if ($prefixes === []) {
+            return [];
+        }
+        $pathspecs = array_map(static fn (string $prefix): string => trim($prefix, '/'), $prefixes);
+        $status = $this->run($path, ['status', '--porcelain', '--untracked-files=all', '--', ...$pathspecs]);
+
+        return array_values(array_filter(
+            explode("\n", $status),
+            static fn (string $line): bool => str_starts_with($line, '?? '),
+        ));
+    }
+
+    /**
+     * Whether $path is a shallow clone, whose history stops short of the first commit.
+     *
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout
+     */
+    public function isShallow(string $path): bool
+    {
+        return trim($this->run($path, ['rev-parse', '--is-shallow-repository'])) === 'true';
+    }
+
+    /**
      * @throws RuntimeException with git's own error, when $path is not a readable checkout
      */
     public function hasCommit(string $path, string $sha): bool
@@ -74,6 +106,37 @@ class GitRunner
         }
 
         return $matches[1];
+    }
+
+    /**
+     * The commits of $sha and its history that touch $prefix, newest first. $since is a committer
+     * date, as GitHub's commits API `since` is.
+     *
+     * The message has the trailing newline git adds stripped, so it reads the same as GitHub's.
+     *
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout or $sha
+     *         is not in it
+     * @return list<array{sha: string, author: string, message: string}>
+     */
+    public function log(string $path, string $sha, string $prefix, ?string $since): array
+    {
+        $args = ['log', '--format=%H%x00%an%x00%B%x00%x1e'];
+        if ($since !== null) {
+            $args[] = "--since={$since}";
+        }
+        array_push($args, $sha, '--', trim($prefix, '/'));
+
+        $commits = [];
+        foreach (explode("\x1e", $this->run($path, $args)) as $record) {
+            $record = ltrim($record, "\n");
+            if ($record === '') {
+                continue;
+            }
+            [$commitSha, $author, $message] = explode("\0", $record, 4);
+            $commits[] = ['sha' => $commitSha, 'author' => $author, 'message' => rtrim($message, "\n")];
+        }
+
+        return $commits;
     }
 
     /**
