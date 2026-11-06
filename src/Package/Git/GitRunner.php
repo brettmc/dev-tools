@@ -58,6 +58,25 @@ class GitRunner
     }
 
     /**
+     * The hash of the tree at $prefix in $sha, or null when $sha has nothing there. Two commits
+     * with the same tree have the same content, which is how a split commit is matched to the
+     * monorepo commit it was split from.
+     *
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout or $sha
+     *         is not in it
+     */
+    public function tree(string $path, string $sha, string $prefix): ?string
+    {
+        //a trailing slash would list the directory's entries, not the directory
+        $entry = trim($this->run($path, ['ls-tree', $sha, '--', trim($prefix, '/')]));
+        if (preg_match('/^\d+ tree ([0-9a-f]+)\t/', $entry, $matches) !== 1) {
+            return null;
+        }
+
+        return $matches[1];
+    }
+
+    /**
      * Run a git command that answers yes or no by exiting 0 or 1. Any other exit is an error.
      *
      * @param list<string> $args

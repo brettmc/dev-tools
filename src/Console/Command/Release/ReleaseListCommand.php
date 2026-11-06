@@ -36,7 +36,7 @@ class ReleaseListCommand extends AbstractReleaseCommand
         if ($stable && $unstable) {
             throw new \InvalidArgumentException('Can only use one of stable/unstable');
         }
-        $this->token = $input->getOption('token');
+        $this->token = $this->token($input);
         $this->sources = self::AVAILABLE_REPOS;
         $this->client = Psr18ClientDiscovery::find();
         $this->parser = new Parser();

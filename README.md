@@ -30,46 +30,59 @@ You can provide the token either via the `GITHUB_TOKEN` env var (preferred), or 
 
 ```shell
 export GITHUB_TOKEN=<fine-grain-access-token>
-bin/otel release:run -[vvv] [--token=token] [--branch=main] [--dry-run] [--repo=<core|contrib>] [--path=../opentelemetry-php]
+bin/otel release:run -[vvv] --path=../opentelemetry-php [--token=token] [--branch=main] [--sha=<commit>] [--dry-run] [--repo=<core|contrib>] [--no-interaction] [--format=json]
 ```
 
 Options:
 - `-v[vv]` - verbosity
 - `--token=` - github token (can also be passed by `GITHUB_TOKEN`)
-- `--branch=` - github branch to tag from
-- `--dry-run` - do not make any changes
-- `--repo=` - choose a single upstream repo to run against (default: all)
-- `--filter=` - filter repositories by prefix
 - `--path=` - a checkout of the monorepo being released, at the commit being tagged, with `composer install`
-  run. Required for core, which includes the default run of all repos. With `--repo=contrib`, it is optional
-  and points at the contrib checkout.
+  run. Required.
+- `--branch=` - github branch to tag from (default: `main`)
+- `--sha=` - the monorepo commit to release, which must be on `--branch` (default: the tip of `--branch`)
+- `--dry-run` - do not make any changes
+- `--repo=` - the monorepo being released (default: the one `--path` is a checkout of)
+- `--filter=` - filter repositories by prefix
+- `-n`, `--no-interaction` - release without asking, see below
+- `--format=` - `text` (default) or `json`, see below
 
-`--path` is needed to tag core in a safe order. Core's service providers declare
-`#[PackageDependency]` on packages released in the same run, and the order those need can only be read
-from a checkout. The command fails before any GitHub call when `--path` is missing, is not a checkout of
-the repo being released, has uncommitted changes to tracked files, or has no `vendor/`. It also fails
-when the checkout's `HEAD` is not the tip of `--branch` on GitHub, so pull before releasing. With
-`--dry-run`, the git checks warn instead.
+#### Check the checkout
 
-The branch tip is checked again before each release. If something is merged during the run, the command
-stops before the next release, as the new commits were not checked or ordered. Run it again to release
-the rest.
+The packages, their changelogs and their tag order are all read from the checkout. Core's service
+providers declare `#[PackageDependency]` on packages released in the same run, and the order those need
+can only be read from a checkout. The command fails before any GitHub call when `--path` is missing, is
+not a checkout of the repo being released, has uncommitted changes to tracked files, or has no `vendor/`.
 
-The tag is made on the split repository's branch, which gitsplit updates some time after a merge. So
-before each release whose notes come from `CHANGELOG.md`, the command checks that the split's own
-`CHANGELOG.md` already has that version's section. If it doesn't, the run stops: wait for gitsplit and
-run it again. With `--dry-run`, it warns instead.
+The checkout's `HEAD` must be the commit being released. That is `--sha`, which must be on `--branch` on
+GitHub. Without `--sha`, it is the tip of `--branch` as the run starts, so pull before releasing. With
+`--dry-run`, these checks warn instead.
+
+#### Tag the split commit that matches
+
+gitsplit rewrites every commit it pushes to a split repository, so the split commit to tag is found by
+content. For each package with changes, the command reads the tree of the package's directory in the
+commit being released, then walks the split's `--branch` history back to its latest release, at most
+100 commits, for the commit with the same tree. That commit is tagged, and the downstream diffs and the
+split's `CHANGELOG.md` are read at it. With `--force`, the walk includes the latest release, as a
+package without changes has its tree.
+
+Nothing reads the moving branch tip after the run starts. A merge during the run is neither tagged nor a
+reason to stop.
+
+gitsplit updates the split repositories some time after a merge. If no split commit matches yet, the run
+stops: wait for gitsplit and run it again. A rerun with the same `--sha` skips the packages already
+tagged, as their latest release is then their changelog version. With `--dry-run`, it warns instead.
 
 The script will then:
-* fetch `.gitsplit.yaml` from source repositories
+* read `.gitsplit.yml` from the checkout
 * process yaml to determine downstream (read-only) repositories and their path association in upstream (eg open-telemetry/opentelemetry-php:/src/API -> opentelemetry-php/api)
 * find latest release in downstream
-* find changes in upstream newer than the latest release, and their associated pull request
-* retrieve diffs from downstream between latest tag and chosen branch (eg main)
+* find changes in upstream newer than the latest release, up to the commit being released, and their associated pull request
+* retrieve diffs from downstream between latest tag and the split commit
 * check that upstream changes match downstream diffs
 
-With `--path`, the packages that need each other's new versions are put in tag order, as `release:prep`
-prints it, and the order is printed. The new version of each is taken from its changelog.
+The packages that need each other's new versions are put in tag order, as `release:prep` prints it, and
+the order is printed. The new version of each is taken from its changelog.
 
 Once all the info has been gathered, it will iterate over each repo with unreleased changes. For each repo:
 * list the changes
@@ -79,12 +92,62 @@ Once all the info has been gathered, it will iterate over each repo with unrelea
 * generate release notes
 * create the release (unless `--dry-run` was specified)
 
-The default version is the newest dated section (`## 1.45.0 - 2026-11-03`) of the package's `CHANGELOG.md` on
-the branch being tagged, when it is newer than the latest release. That is the section `release:prep` writes,
+The default version is the newest dated section (`## 1.45.0 - 2026-11-03`) of the package's `CHANGELOG.md` in
+the checkout, when it is newer than the latest release. That is the section `release:prep` writes,
 so merge the `release:prep` pull request before running `release:run`.
 
 The release notes are the body of that section, followed by a compare link. A package with no `CHANGELOG.md`, or
 no section for the version you enter, gets the list of merged pull requests instead.
+
+#### Release without asking
+
+With `--no-interaction`, as in CI, nothing is asked and nothing unexpected is let through:
+
+* each package with changes is released as its newest dated changelog version, as the latest release
+  and not as a draft
+* a package with changes but no dated section newer than its latest release is skipped, and named,
+  before its split is checked
+* commits in a split that are not upstream stop the run before anything is tagged, as does a failed
+  compare with the split
+* a failed release request stops the run, as later packages may need that one
+* `--force` is refused, as it needs someone to choose the versions
+* a `--branch` other than `main` is refused before any GitHub call. A backport must not take the latest
+  badge, and its versions are checked against each split's latest release, which is main's. Run it
+  interactively.
+
+The token must then come from `GITHUB_TOKEN` or `--token`. A failed release request stops the run in
+interactive mode too.
+
+#### Read the result as JSON
+
+With `--format=json`, stdout holds one JSON object and nothing else. Progress, prompts, messages and
+errors go to stderr. The object is printed however the run ends, so a workflow can always parse it.
+
+```json
+{
+    "dry_run": false,
+    "sha": "4f1c2e9",
+    "releases": [
+        {"repository": "opentelemetry-php/api", "version": "1.11.0", "target": "9b0d7a1", "latest": true, "draft": false, "url": "https://github.com/opentelemetry-php/api/releases/tag/1.11.0"}
+    ],
+    "skipped": [
+        {"repository": "opentelemetry-php/context", "reason": "no CHANGELOG.md section newer than 1.4.0"}
+    ],
+    "completed": true
+}
+```
+
+* `releases` are in the order they were made. With `--dry-run` they are the releases that would be
+  made, and `url` is null.
+* `target` is the split commit tagged.
+* `skipped` holds the packages with changes that were not released, and why.
+* `completed` is false, and the exit status non-zero, when the run failed, a failed request included.
+  `releases` then holds those made before it. The reason is on stderr.
+* `sha` is null when the run failed before choosing the commit, on the checkout say.
+
+```shell
+bin/otel release:run -n --path=../opentelemetry-php --sha="$SHA" --format=json | jq -r '.releases[].url'
+```
 
 ## Prepare a release
 
@@ -157,9 +220,10 @@ Options:
 - `--filter=` - filter packages by prefix
 - `--dry-run` - report the suggestions without writing anything
 - `--date=` - release date as `YYYY-MM-DD` (default: today)
-- `--set=<package>=<version>` - release a package as this version, without prompting. Repeatable. The
-  package is the composer name or the split repository name.
-- `--format=` - `text` or `markdown`. Markdown suits a pull request description.
+- `--set=<package>=<version|skip>` - release a package as this version, or not at all, without prompting.
+  Repeatable. The package is the composer name or the split repository name. A skipped package keeps its
+  changelog and alias, and is reported as "skipped by --set".
+- `--format=` - `text`, `markdown` or `json`. Markdown suits a pull request description. See below for JSON.
 - `--no-interaction` - accept every suggestion without prompting
 
 For each package it will:
@@ -194,6 +258,35 @@ Only packages in the run are checked. Packages outside it, such as the contrib p
 sdk, are not.
 
 `--dry-run` reports the alias and `replace` changes too, without writing them.
+
+### Read the suggestions as JSON
+
+With `--format=json`, stdout holds one JSON object and nothing else. The table, prompts, messages and
+errors go to stderr. The object holds each package's latest release, the version chosen (null when it
+is not released) with the reason, and its breaking-change warnings. It also holds the tag order, the
+constraint warnings, and whether anything is to be released.
+
+The object is printed however the prep ends. `completed` is false, and the exit status non-zero, when
+it failed, with the reason on stderr. `packages` and `order` are then empty if it failed before the
+packages were assessed.
+
+```json
+{
+    "packages": [
+        {"package": "open-telemetry/api", "repository": "opentelemetry-php/api", "latest": "1.10.1", "version": "1.11.0", "reason": "new features", "warnings": []},
+        {"package": "open-telemetry/sdk", "repository": "opentelemetry-php/sdk", "latest": "1.15.0", "version": "1.16.0", "reason": "breaking changes recorded", "warnings": ["Dropped X."]},
+        {"package": "open-telemetry/context", "repository": "opentelemetry-php/context", "latest": "1.4.0", "version": null, "reason": "no unreleased changes", "warnings": []}
+    ],
+    "order": ["open-telemetry/api", "open-telemetry/sdk"],
+    "constraint_warnings": [],
+    "release": true,
+    "completed": true
+}
+```
+
+```shell
+vendor/bin/otel release:prep -n --dry-run --format=json | jq '[.packages[].warnings[]] | length'
+```
 
 Then review the changes with `git diff`, open a pull request, and once it is merged run `release:run`.
 
