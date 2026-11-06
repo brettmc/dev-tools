@@ -132,6 +132,12 @@ class SpiCheckCommandTest extends TestCase
         $this->assertStringContainsString('.gitsplit.yml', $this->tester->getDisplay());
     }
 
+    public function test_a_path_that_does_not_exist_fails_naming_it(): void
+    {
+        $this->assertSame(Command::FAILURE, $this->tester->execute(['--path' => '/nowhere/monorepo']));
+        $this->assertStringContainsString('--path /nowhere/monorepo is not a directory', $this->tester->getDisplay());
+    }
+
     private function checkout(string $alias, string $replace): void
     {
         $url = $this->root->url();

@@ -37,9 +37,12 @@ class ReleaseListCommand extends AbstractReleaseCommand
             throw new \InvalidArgumentException('Can only use one of stable/unstable');
         }
         $this->token = $this->token($input);
-        $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
         $this->parser = new Parser();
         $this->registerInputAndOutput($input, $output);
+        $path = $this->checkout_path($input->getOption('path'));
+        if ($path === null) {
+            return Command::FAILURE;
+        }
 
         $found = $this->find_split_packages($path, null);
         if ($found === null) {

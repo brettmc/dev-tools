@@ -22,6 +22,7 @@ use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
+use OpenTelemetry\DevTools\Util\Path;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\Table;
@@ -127,7 +128,10 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $this->token = $this->token($input);
         $dryRun = $this->dry_run = (bool) $input->getOption('dry-run');
         $this->source_branch = $input->getOption('branch') ?? 'main';
-        $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
+        $path = $this->checkout_path($input->getOption('path'));
+        if ($path === null) {
+            return Command::FAILURE;
+        }
 
         $date = $input->getOption('date') ?? date('Y-m-d');
         $parsedDate = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
@@ -356,7 +360,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
      */
     private function read_composer(PrepEntry $entry, string $path): void
     {
-        $file = $this->contained_file($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
+        $file = Path::contained($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
         $json = $file !== null && is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
         $entry->composer = is_array($json) ? $json : [];
         $name = $entry->composer['name'] ?? null;
@@ -390,7 +394,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $version = (string) $entry->version;
         $alias = BranchAliasUpdater::aliasForVersion($version);
         $current = $entry->composer['extra']['branch-alias'][self::BRANCH_KEY] ?? null;
-        $file = $this->contained_file($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
+        $file = Path::contained($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
         if ($alias === null || $file === null || !is_string($current) || BranchAliasUpdater::covers($current, $version)) {
             return null;
         }
@@ -487,7 +491,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $project = $repository->downstream->project;
         $prefix = $repository->upstream->path;
 
-        $file = $this->contained_file($path, $prefix, self::CHANGELOG_FILE);
+        $file = Path::contained($path, $prefix, self::CHANGELOG_FILE);
         if ($file === null) {
             $this->output->writeln(sprintf('<error>[%s] split prefix "%s" resolves outside %s, refusing to write</error>', $entry->label(), $prefix, $path));
             $this->failures++;

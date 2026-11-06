@@ -649,6 +649,15 @@ class ReleaseCommandTest extends TestCase
         $this->assertStringContainsString('not a monorepo checkout', $this->output());
     }
 
+    public function test_path_that_does_not_exist_fails_naming_it(): void
+    {
+        $status = $this->run_release('', ['--path' => '/nowhere/monorepo']);
+
+        $this->assertSame(1, $status);
+        $this->assertSame([], $this->requests);
+        $this->assertStringContainsString('--path /nowhere/monorepo is not a directory', $this->output());
+    }
+
     public function test_unreadable_package_dependencies_fail_before_calling_github(): void
     {
         $this->readError = new RuntimeException('vfs://root/vendor/autoload.php not found, run `composer install` in vfs://root first');

@@ -13,6 +13,7 @@ use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Composer\ConfigAttributes;
 use OpenTelemetry\DevTools\Package\Composer\PackageAttributeResolver;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
+use OpenTelemetry\DevTools\Util\Path;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Yaml\Parser;
@@ -236,55 +237,16 @@ abstract class AbstractReleaseCommand extends BaseCommand
     }
 
     /**
-     * The file $name in the split package at $prefix, or null when it lies outside $root.
-     *
-     * The prefixes are read from the checkout's own .gitsplit.yml, which is committed content: a
-     * prefix of `../other-project`, or one that is a symlink pointing out of the tree, would
-     * otherwise let this command rewrite a file that the caller never selected with --path.
+     * The checkout --path names, by default the working directory, made absolute; null, having
+     * said so, when it is not a directory.
      */
-    protected function contained_file(string $root, string $prefix, string $name): ?string
+    protected function checkout_path(?string $path): ?string
     {
-        $target = "{$root}/{$prefix}/{$name}";
-
-        //realpath resolves symlinks, so prefer it where it answers; it returns false for a path that
-        //does not exist and for every stream wrapper (vfs:// in the tests), hence the lexical
-        //fallback, which is what makes containment checkable without touching the real filesystem.
-        $canonicalRoot = realpath($root) ?: self::normalize_path($root);
-        $canonicalTarget = realpath($target) ?: self::normalize_path($target);
-
-        $prefixOfRoot = rtrim($canonicalRoot, '/') . '/';
-
-        return str_starts_with($canonicalTarget, $prefixOfRoot) ? $canonicalTarget : null;
-    }
-
-    /**
-     * Collapse `.` and `..` segments textually, so that a path can be compared against a root
-     * without the filesystem being consulted. Any stream wrapper scheme is preserved.
-     */
-    protected static function normalize_path(string $path): string
-    {
-        $scheme = '';
-        if (preg_match('#^[a-zA-Z][a-zA-Z0-9+.\-]*://#', $path, $matches)) {
-            $scheme = $matches[0];
-            $path = substr($path, strlen($scheme));
-        }
-        $absolute = str_starts_with($path, '/');
-
-        $segments = [];
-        foreach (explode('/', $path) as $segment) {
-            if ($segment === '' || $segment === '.') {
-                continue;
-            }
-            if ($segment === '..') {
-                //popping past the start cannot be used to escape: the result is then shorter than
-                //the root it is compared against, so containment fails
-                array_pop($segments);
-
-                continue;
-            }
-            $segments[] = $segment;
+        $directory = Path::directory($path);
+        if ($directory === null) {
+            $this->output->writeln("<error>--path {$path} is not a directory</error>");
         }
 
-        return $scheme . ($absolute ? '/' : '') . implode('/', $segments);
+        return $directory;
     }
 }

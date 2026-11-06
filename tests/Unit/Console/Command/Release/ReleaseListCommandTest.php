@@ -102,6 +102,13 @@ class ReleaseListCommandTest extends TestCase
         $this->assertStringContainsString('not a monorepo checkout', $this->tester->getDisplay());
     }
 
+    public function test_path_that_does_not_exist_fails_naming_it(): void
+    {
+        $this->assertSame(Command::FAILURE, $this->tester->execute(['--path' => '/nowhere/monorepo']));
+        $this->assertSame([], $this->urls);
+        $this->assertStringContainsString('--path /nowhere/monorepo is not a directory', $this->tester->getDisplay());
+    }
+
     public function test_package_without_a_release_is_listed_as_none(): void
     {
         $this->latest['sdk'] = null;

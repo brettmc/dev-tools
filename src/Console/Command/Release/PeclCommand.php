@@ -48,8 +48,11 @@ class PeclCommand extends AbstractReleaseCommand
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $force = $input->getOption('force');
-        $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
         $this->registerInputAndOutput($input, $output);
+        $path = $this->checkout_path($input->getOption('path'));
+        if ($path === null) {
+            return Command::FAILURE;
+        }
         $packageXml = $path . '/' . self::PACKAGE_XML;
         if (!is_file($packageXml)) {
             $this->output->writeln(sprintf('<error>%s has no %s: pass --path to an %s checkout</error>', $path, self::PACKAGE_XML, self::REPOSITORY));

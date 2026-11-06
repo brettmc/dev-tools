@@ -64,6 +64,29 @@ class BranchAliasCommandTest extends TestCase
         $this->assertStringContainsString('is not a monorepo checkout', $this->commandTester->getDisplay());
     }
 
+    public function test_fails_when_path_does_not_exist(): void
+    {
+        $this->assertSame(Command::FAILURE, $this->execute('/nowhere/monorepo'));
+        $this->assertStringContainsString('--path /nowhere/monorepo is not a directory', $this->commandTester->getDisplay());
+    }
+
+    public function test_updates_alias_under_a_relative_path(): void
+    {
+        $root = $this->setUpRealMonorepo('packages/api');
+        $cwd = (string) getcwd();
+        chdir(dirname($root));
+
+        try {
+            $status = $this->executeWithRelease('monorepo', '1.10.0');
+        } finally {
+            chdir($cwd);
+        }
+
+        $this->assertStringNotContainsString('resolves outside', $this->commandTester->getDisplay());
+        $this->assertSame(Command::SUCCESS, $status);
+        $this->assertStringContainsString('1.10.x-dev', (string) file_get_contents("{$root}/packages/api/composer.json"));
+    }
+
     public function test_fails_when_path_has_no_split_config(): void
     {
         vfsStream::newFile('composer.json')

@@ -8,6 +8,7 @@ use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasStatus;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasUpdater;
+use OpenTelemetry\DevTools\Util\Path;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
@@ -55,8 +56,11 @@ class BranchAliasCommand extends AbstractReleaseCommand
         $this->token = $this->token($input);
         $this->branch = $input->getOption('branch') ?? 'main';
         $this->dry_run = $input->getOption('dry-run');
-        $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
         $this->registerInputAndOutput($input, $output);
+        $path = $this->checkout_path($input->getOption('path'));
+        if ($path === null) {
+            return Command::FAILURE;
+        }
 
         $this->parser = new Parser();
 
@@ -147,7 +151,7 @@ class BranchAliasCommand extends AbstractReleaseCommand
             return [$package, $version, '', '', 'skipped, cannot parse version'];
         }
 
-        $composerFile = $this->contained_file($path, $repository->upstream->path, self::COMPOSER_FILE);
+        $composerFile = Path::contained($path, $repository->upstream->path, self::COMPOSER_FILE);
         if ($composerFile === null) {
             $this->output->writeln(sprintf(
                 '<error>[%s] split prefix "%s" resolves outside %s, refusing to write</error>',

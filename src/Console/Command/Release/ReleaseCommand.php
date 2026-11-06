@@ -18,6 +18,7 @@ use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
+use OpenTelemetry\DevTools\Util\Path;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Helper\QuestionHelper;
@@ -150,7 +151,11 @@ class ReleaseCommand extends AbstractReleaseCommand
 
             return Command::FAILURE;
         }
-        $checkout = $this->read_checkout(rtrim($path, '/'), $source ? self::AVAILABLE_REPOS[$source] : null);
+        $path = $this->checkout_path($path);
+        if ($path === null) {
+            return Command::FAILURE;
+        }
+        $checkout = $this->read_checkout($path, $source ? self::AVAILABLE_REPOS[$source] : null);
         if ($checkout === null) {
             return Command::FAILURE;
         }
@@ -509,7 +514,7 @@ class ReleaseCommand extends AbstractReleaseCommand
         $byName = [];
         foreach ($local as $index => $repository) {
             $prefix = $repository->upstream->path;
-            $file = $this->contained_file($checkout['path'], $prefix, self::COMPOSER_FILE);
+            $file = Path::contained($checkout['path'], $prefix, self::COMPOSER_FILE);
             $json = $file !== null && is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
             $composer = is_array($json) ? $json : [];
             $name = is_string($composer['name'] ?? null) ? $composer['name'] : "open-telemetry/{$repository->downstream->project}";
@@ -700,7 +705,7 @@ class ReleaseCommand extends AbstractReleaseCommand
      */
     private function read_changelog(Repository $repository): ?ChangelogReleases
     {
-        $file = $this->contained_file($this->checkoutPath, $repository->upstream->path, self::CHANGELOG_FILE);
+        $file = Path::contained($this->checkoutPath, $repository->upstream->path, self::CHANGELOG_FILE);
         if ($file === null || !is_file($file)) {
             return null;
         }

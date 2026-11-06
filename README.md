@@ -52,7 +52,7 @@ The packages, their commits, their changelogs and their tag order are all read f
 service providers declare `#[PackageDependency]` on packages released in the same run, and the order
 those need can only be read from a checkout. The command fails before any GitHub call when `--path`:
 
-* is missing, or is not a checkout of the repo being released
+* is missing, is not a directory, or is not a checkout of the repo being released
 * is a shallow clone, as the commits of each package are read back to its latest release
 * has uncommitted changes to tracked files
 * has untracked files in a package's directory, such as a new `CHANGELOG.md`, which would be read as if

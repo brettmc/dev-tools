@@ -206,6 +206,28 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('no CHANGELOG.md', $this->tester->getDisplay());
     }
 
+    public function test_relative_path_reports_a_package_without_a_changelog(): void
+    {
+        $this->monorepo(['src/API' => ['api', null]]);
+        $base = sys_get_temp_dir() . '/release-prep-' . bin2hex(random_bytes(4));
+        mkdir("{$base}/monorepo/src/API", 0o777, true);
+        copy($this->root->url() . '/.gitsplit.yml', "{$base}/monorepo/.gitsplit.yml");
+        copy($this->root->url() . '/composer.json', "{$base}/monorepo/composer.json");
+        $cwd = (string) getcwd();
+        chdir($base);
+
+        try {
+            $status = $this->prep(['--path' => 'monorepo'], ['interactive' => false]);
+        } finally {
+            chdir($cwd);
+            exec('rm -rf ' . escapeshellarg($base));
+        }
+
+        $this->assertStringNotContainsString('resolves outside', $this->tester->getDisplay());
+        $this->assertStringContainsString('no CHANGELOG.md', $this->tester->getDisplay());
+        $this->assertSame(Command::SUCCESS, $status);
+    }
+
     public function test_package_with_nothing_unreleased_is_not_released(): void
     {
         $this->monorepo(['src/API' => ['api', self::EMPTY]]);
@@ -310,6 +332,12 @@ class ReleasePrepCommandTest extends TestCase
     {
         $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
         $this->assertStringContainsString('is not a monorepo checkout', $this->tester->getDisplay());
+    }
+
+    public function test_path_that_does_not_exist_fails_naming_it(): void
+    {
+        $this->assertSame(Command::FAILURE, $this->prep(['--path' => '/nowhere/monorepo'], ['interactive' => false]));
+        $this->assertStringContainsString('--path /nowhere/monorepo is not a directory', $this->tester->getDisplay());
     }
 
     public function test_markdown_format_prints_a_table_for_a_pull_request_body(): void

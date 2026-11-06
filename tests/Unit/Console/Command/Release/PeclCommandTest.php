@@ -75,6 +75,12 @@ class PeclCommandTest extends TestCase
         $this->tester = new CommandTester(new PeclCommand(new GitHub($client), $git));
     }
 
+    public function test_path_that_does_not_exist_fails_naming_it(): void
+    {
+        $this->assertSame(Command::FAILURE, $this->tester->execute(['--path' => '/nowhere/instrumentation']));
+        $this->assertStringContainsString('--path /nowhere/instrumentation is not a directory', $this->tester->getDisplay());
+    }
+
     public function test_package_xml_and_commits_are_read_from_the_checkout(): void
     {
         $this->tester->setInputs(['1.3.0', 'stable']);
