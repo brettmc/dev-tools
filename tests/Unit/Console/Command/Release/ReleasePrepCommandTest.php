@@ -40,6 +40,8 @@ class ReleasePrepCommandTest extends TestCase
     private array $requests = [];
     /** tip of the upstream branch on GitHub, null for a failed lookup */
     private ?string $tip = 'abc123';
+    /** status of the latest release lookups */
+    private int $latestStatus = 200;
     private bool $tipIsLocal = true;
     private bool $tipIsAncestor = true;
     private ?RuntimeException $gitError = null;
@@ -338,6 +340,7 @@ class ReleasePrepCommandTest extends TestCase
             'order' => ['open-telemetry/api', 'open-telemetry/sdk'],
             'constraint_warnings' => [],
             'release' => true,
+            'completed' => true,
         ], json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR));
         $this->assertStringContainsString('[DRY-RUN] no files were changed', $this->tester->getErrorOutput());
     }
@@ -364,6 +367,55 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertSame(['1.11.0', null], array_column($json['packages'], 'version'));
         $this->assertSame(['set by --set', 'skipped by --set'], array_column($json['packages'], 'reason'));
         $this->assertTrue($json['release']);
+    }
+
+    public function test_json_format_is_printed_for_a_bad_option(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'json', '--date' => '3 November'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertSame([
+            'packages' => [],
+            'order' => [],
+            'constraint_warnings' => [],
+            'release' => false,
+            'completed' => false,
+        ], json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR));
+        $this->assertStringContainsString('--date must be YYYY-MM-DD', $this->tester->getErrorOutput());
+    }
+
+    public function test_json_format_is_printed_for_an_unknown_set_package(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'json', '--set' => ['nope=1.0.0']], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertFalse(json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR)['completed']);
+        $this->assertStringContainsString('nope', $this->tester->getErrorOutput());
+    }
+
+    public function test_json_format_lists_the_packages_when_one_fails(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED], 'src/SDK' => ['sdk', "# Changelog\n\n## Unreleased\n\n### Housekeeping\n\n- Tidied.\n"]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'json'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $json = json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertFalse($json['completed']);
+        $this->assertSame(['open-telemetry/api', 'open-telemetry/sdk'], array_column($json['packages'], 'package'));
+        $this->assertStringContainsString('Housekeeping', $this->tester->getErrorOutput());
+    }
+
+    public function test_json_format_is_printed_when_a_lookup_throws(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        $this->latestStatus = 500;
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'json'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertFalse(json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR)['completed']);
+        $this->assertStringContainsString('Error retrieving latest release', $this->tester->getErrorOutput());
     }
 
     public function test_unknown_format_fails(): void
@@ -699,6 +751,9 @@ class ReleasePrepCommandTest extends TestCase
                 return $this->tip === null
                     ? new Response(500)
                     : new Response(200, [], json_encode([['ref' => "refs/heads/{$m[1]}", 'object' => ['sha' => $this->tip]]]));
+            }
+            if ($this->latestStatus !== 200) {
+                return new Response($this->latestStatus);
             }
             preg_match('#/repos/opentelemetry-php/([^/]+)/releases/latest#', $url, $m);
             $tag = $this->releases[$m[1] ?? ''] ?? null;

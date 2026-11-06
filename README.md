@@ -63,7 +63,8 @@ gitsplit rewrites every commit it pushes to a split repository, so the split com
 content. For each package with changes, the command reads the tree of the package's directory in the
 commit being released, then walks the split's `--branch` history back to its latest release, at most
 100 commits, for the commit with the same tree. That commit is tagged, and the downstream diffs and the
-split's `CHANGELOG.md` are read at it.
+split's `CHANGELOG.md` are read at it. With `--force`, the walk includes the latest release, as a
+package without changes has its tree.
 
 Nothing reads the moving branch tip after the run starts. A merge during the run is neither tagged nor a
 reason to stop.
@@ -102,12 +103,17 @@ no section for the version you enter, gets the list of merged pull requests inst
 
 With `--no-interaction`, as in CI, nothing is asked and nothing unexpected is let through:
 
-* each package with changes is released as its newest dated changelog version, not as a draft
-* a package with changes but no dated section newer than its latest release is skipped, and named
-* the release is the latest only when `--branch` is `main`, so a backport doesn't take the badge
-* commits in a split that are not upstream stop the run before anything is tagged
+* each package with changes is released as its newest dated changelog version, as the latest release
+  and not as a draft
+* a package with changes but no dated section newer than its latest release is skipped, and named,
+  before its split is checked
+* commits in a split that are not upstream stop the run before anything is tagged, as does a failed
+  compare with the split
 * a failed release request stops the run, as later packages may need that one
 * `--force` is refused, as it needs someone to choose the versions
+* a `--branch` other than `main` is refused before any GitHub call. A backport must not take the latest
+  badge, and its versions are checked against each split's latest release, which is main's. Run it
+  interactively.
 
 The token must then come from `GITHUB_TOKEN` or `--token`. A failed release request stops the run in
 interactive mode too.
@@ -135,8 +141,8 @@ errors go to stderr. The object is printed however the run ends, so a workflow c
   made, and `url` is null.
 * `target` is the split commit tagged.
 * `skipped` holds the packages with changes that were not released, and why.
-* `completed` is false, and the exit status non-zero, when the run failed. `releases` then holds those
-  made before it. The reason is on stderr.
+* `completed` is false, and the exit status non-zero, when the run failed, a failed request included.
+  `releases` then holds those made before it. The reason is on stderr.
 * `sha` is null when the run failed before choosing the commit, on the checkout say.
 
 ```shell
@@ -260,6 +266,10 @@ errors go to stderr. The object holds each package's latest release, the version
 is not released) with the reason, and its breaking-change warnings. It also holds the tag order, the
 constraint warnings, and whether anything is to be released.
 
+The object is printed however the prep ends. `completed` is false, and the exit status non-zero, when
+it failed, with the reason on stderr. `packages` and `order` are then empty if it failed before the
+packages were assessed.
+
 ```json
 {
     "packages": [
@@ -269,7 +279,8 @@ constraint warnings, and whether anything is to be released.
     ],
     "order": ["open-telemetry/api", "open-telemetry/sdk"],
     "constraint_warnings": [],
-    "release": true
+    "release": true,
+    "completed": true
 }
 ```
 

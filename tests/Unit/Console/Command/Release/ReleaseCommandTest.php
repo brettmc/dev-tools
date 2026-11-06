@@ -57,6 +57,12 @@ class ReleaseCommandTest extends TestCase
     private bool $upstreamCommits = true;
     /** @var array<string, int> status of the release request by project, 201 when unset */
     private array $releaseStatus = [];
+    /** project whose release request fails in transport */
+    private ?string $unreachable = null;
+    /** status of the compare of a split's latest release with its target */
+    private int $compareStatus = 200;
+    /** status of the latest release lookups */
+    private int $latestStatus = 200;
     /** @var resource */
     private $out;
     /** @var resource */
@@ -108,13 +114,78 @@ class ReleaseCommandTest extends TestCase
         $this->assertFalse($this->created()['draft']);
     }
 
-    public function test_no_interaction_does_not_make_a_release_off_main_the_latest(): void
+    public function test_no_interaction_off_main_is_refused_before_calling_github(): void
     {
         $status = $this->run_release('', ['--branch' => '1.x'], false);
 
+        $this->assertSame(1, $status);
+        $this->assertSame([], $this->requests);
+        $this->assertStringContainsString('--branch=1.x', $this->output());
+    }
+
+    public function test_a_release_off_another_branch_is_tagged_at_the_prompt(): void
+    {
+        $status = $this->run_release("1.44.1\nn\nn\n", ['--branch' => '1.x']);
+
         $this->assertSame(0, $status);
-        $this->assertSame('1.45.0', $this->created()['tag_name']);
+        $this->assertSame('1.44.1', $this->created()['tag_name']);
         $this->assertSame('false', $this->created()['make_latest']);
+    }
+
+    public function test_compare_failure_stops_the_run_before_tagging(): void
+    {
+        $this->compareStatus = 500;
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('Failed to compare', $this->output());
+    }
+
+    public function test_dry_run_warns_about_a_compare_failure(): void
+    {
+        $this->compareStatus = 500;
+
+        $status = $this->run_release('', ['--dry-run' => true], false);
+
+        $this->assertSame(0, $status);
+        $this->assertStringContainsString('[DRY-RUN] Failed to compare', $this->output());
+    }
+
+    public function test_package_without_a_new_dated_section_is_skipped_before_the_split_checks(): void
+    {
+        $this->latestTag = '1.45.0';
+        $this->splitPushed = false;
+        $this->splitMessages = ['Add attributes', 'Pushed straight to the split'];
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(0, $status);
+        $this->assertSame([], $this->treeReads);
+        $this->assertStringContainsString('[SKIP] opentelemetry-php/sem-conv has unreleased changes but no CHANGELOG.md section newer than 1.45.0', $this->output());
+    }
+
+    public function test_package_without_changes_is_not_compared_with_the_split(): void
+    {
+        $this->upstreamCommits = false;
+        $this->splitMessages = ['Merged after the release'];
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(0, $status);
+        $this->assertSame([], preg_grep('#/sem-conv/compare/#', array_column($this->requests, 'url')));
+    }
+
+    public function test_force_tags_the_released_commit_of_an_unchanged_package(): void
+    {
+        $this->upstreamCommits = false;
+        $this->splitMessages = [];
+
+        $status = $this->run_release("1.45.0\nn\nn\n", ['--force' => true]);
+
+        $this->assertSame(0, $status);
+        $this->assertSame('sem-conv-released', $this->created()['target_commitish']);
     }
 
     public function test_no_interaction_skips_and_names_a_package_without_a_new_dated_section(): void
@@ -216,7 +287,7 @@ class ReleaseCommandTest extends TestCase
 
     public function test_split_history_is_walked_from_the_latest_release(): void
     {
-        $this->run_release('', ['--branch' => '1.x'], false);
+        $this->run_release("\nn\nn\n", ['--branch' => '1.x']);
 
         $this->assertContains(
             'https://api.github.com/repos/opentelemetry-php/sem-conv/commits?sha=1.x&per_page=100&since=2026-01-01T00:00:01Z',
@@ -742,6 +813,30 @@ class ReleaseCommandTest extends TestCase
         $this->assertStringContainsString('No github token', $this->errors());
     }
 
+    public function test_json_format_reports_the_releases_made_before_a_transport_failure(): void
+    {
+        $this->api_and_sdk();
+        $this->unreachable = 'sdk';
+
+        $status = $this->run_release('', ['--filter' => 'src/', '--format' => 'json'], false);
+
+        $this->assertSame(1, $status);
+        $this->assertFalse($this->json()['completed']);
+        $this->assertSame(['opentelemetry-php/api'], array_column($this->json()['releases'], 'repository'));
+        $this->assertStringContainsString('Connection reset by peer', $this->errors());
+    }
+
+    public function test_json_format_is_printed_when_a_lookup_throws(): void
+    {
+        $this->latestStatus = 500;
+
+        $status = $this->run_release('', ['--format' => 'json'], false);
+
+        $this->assertSame(1, $status);
+        $this->assertFalse($this->json()['completed']);
+        $this->assertStringContainsString('Error retrieving latest release', $this->errors());
+    }
+
     public function test_unknown_format_fails_before_calling_github(): void
     {
         $status = $this->run_release('', ['--format' => 'markdown'], false);
@@ -946,6 +1041,9 @@ class ReleaseCommandTest extends TestCase
         $json = static fn (mixed $data, int $status = 200): Response => new Response($status, [], json_encode($data));
         if ($method === 'POST') {
             preg_match('#/repos/[^/]+/([^/]+)/releases$#', $url, $m);
+            if (($m[1] ?? null) === $this->unreachable) {
+                throw new RuntimeException('Connection reset by peer');
+            }
             $status = $this->releaseStatus[$m[1] ?? ''] ?? 201;
 
             return $status === 201
@@ -967,15 +1065,22 @@ class ReleaseCommandTest extends TestCase
                 str_contains($url, "/{$project}/contents/CHANGELOG.md?ref=") => $split === null
                     ? new Response(404)
                     : $json(['encoding' => 'base64', 'content' => chunk_split(base64_encode($split), 60, "\n")]),
-                str_contains($url, "/{$project}/releases/latest") => $json(['tag_name' => $latest, 'created_at' => '2026-01-01T00:00:00Z']),
-                str_contains($url, "/{$project}/commits?sha=") => $json(array_reverse(array_map(
+                str_contains($url, "/{$project}/releases/latest") => $this->latestStatus !== 200
+                    ? $json(['message' => 'Server Error'], $this->latestStatus)
+                    : $json(['tag_name' => $latest, 'created_at' => '2026-01-01T00:00:00Z']),
+                //without since, the walk reaches the released commit, whose tree is the checkout's
+                //when nothing has changed since
+                str_contains($url, "/{$project}/commits?sha=") => $json(array_merge(array_reverse(array_map(
                     fn (string $message, int $i): array => [
                         'sha' => "{$project}-{$i}",
                         'commit' => ['message' => $message, 'tree' => ['sha' => $this->splitPushed && $i === $match ? "tree-{$prefix}" : "other-{$i}"]],
                     ],
                     $this->splitMessages,
                     array_keys($this->splitMessages),
-                ))),
+                )), str_contains($url, '&since=') ? [] : [
+                    ['sha' => "{$project}-released", 'commit' => ['message' => 'Released', 'tree' => ['sha' => $this->upstreamCommits ? 'released' : "tree-{$prefix}"]]],
+                ])),
+                str_contains($url, "/{$project}/compare/") && $this->compareStatus !== 200 => $json(['message' => 'Server Error'], $this->compareStatus),
                 preg_match("#/{$project}/compare/[^/]+\\.\\.\\.{$project}-(\\d+)$#", $url, $m) === 1 => $json(['commits' => array_map(
                     static fn (string $message): array => ['sha' => 'abc', 'commit' => ['message' => $message]],
                     array_slice($this->splitMessages, 0, (int) $m[1] + 1)

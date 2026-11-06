@@ -17,6 +17,7 @@ use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
+use Psr\Http\Client\ClientExceptionInterface;
 use Psr\Http\Client\ClientInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
@@ -93,7 +94,14 @@ class ReleaseCommand extends AbstractReleaseCommand
         if ($format === 'text') {
             return $this->release($input, $output);
         }
-        $status = $this->release($input, $output->getErrorOutput());
+
+        try {
+            $status = $this->release($input, $output->getErrorOutput());
+        } catch (\Exception|ClientExceptionInterface $e) {
+            //the JSON is what tells a workflow which packages were released before the failure
+            $output->getErrorOutput()->writeln("<error>{$e->getMessage()}</error>");
+            $status = Command::FAILURE;
+        }
         $output->writeln(json_encode([
             'dry_run' => $this->dry_run,
             'sha' => $this->sha,
@@ -117,6 +125,12 @@ class ReleaseCommand extends AbstractReleaseCommand
         $this->force = $input->getOption('force');
         if ($this->force && !$input->isInteractive()) {
             $output->writeln('<error>--force releases packages with no changes, which needs someone to choose the versions; run it interactively</error>');
+
+            return Command::FAILURE;
+        }
+        if ($this->source_branch !== 'main' && !$input->isInteractive()) {
+            //the version is checked against each split's latest release, which is main's
+            $output->writeln("<error>--no-interaction releases only from main, as each package's latest release is main's. Run --branch={$this->source_branch} interactively.</error>");
 
             return Command::FAILURE;
         }
@@ -163,10 +177,22 @@ class ReleaseCommand extends AbstractReleaseCommand
         foreach ($found as $repository) {
             $bar->setMessage($repository->downstream->project);
             $repository = $this->populate_release_details($repository);
+            if (!$this->to_be_released($repository)) {
+                //publish_repositories() skips it; it is kept for the tag order of the rest
+                $repository->diff = new Diff();
+                $repositories[] = $repository;
+                $bar->advance();
+
+                continue;
+            }
             if (!$this->find_split_commit($repository)) {
                 return Command::FAILURE;
             }
-            $repository->diff = $this->get_diffs($repository);
+            $diff = $this->get_diffs($repository);
+            if ($diff === null) {
+                return Command::FAILURE;
+            }
+            $repository->diff = $diff;
 
             $differences = $this->unexpected_commits($repository);
             if ($differences === []) {
@@ -190,6 +216,21 @@ class ReleaseCommand extends AbstractReleaseCommand
         $this->remind_about_branch_aliases();
 
         return $completed ? Command::SUCCESS : Command::FAILURE;
+    }
+
+    /**
+     * Whether the package may be released, and so needs its split commit and diff. Without
+     * interaction, a package with no newer dated changelog section is skipped, so a split that
+     * will not be tagged must not stop the run.
+     */
+    private function to_be_released(Repository $repository): bool
+    {
+        if ($repository->commits === [] && !$this->force) {
+            return false;
+        }
+
+        return $this->input->isInteractive()
+            || $this->suggest_version($this->changelogs[(string) $repository->downstream] ?? null, $repository->latestRelease?->version) !== null;
     }
 
     private function skip(Repository $repository, string $reason): void
@@ -336,17 +377,14 @@ class ReleaseCommand extends AbstractReleaseCommand
      * Find the split commit with the same content as the package in the commit being released,
      * which is the one to tag. gitsplit rewrites every commit, so the trees are what match.
      *
-     * The split's history is walked newest first from its latest release, which bounds the walk,
-     * as does the cap of one page of 100 commits.
+     * The split's history is walked newest first back to its latest release, which bounds the walk,
+     * as does the cap of one page of 100 commits. With --force the walk goes past the latest
+     * release, as an unchanged package has the tree of the commit released.
      *
      * @return bool false when the run should stop, having said why
      */
     private function find_split_commit(Repository $repository): bool
     {
-        if ($repository->commits === [] && !$this->force) {
-            //nothing to release, and its tree is that of its latest release, which the walk excludes
-            return true;
-        }
         $prefix = $repository->upstream->path;
         assert($this->sha !== null);
 
@@ -360,7 +398,7 @@ class ReleaseCommand extends AbstractReleaseCommand
         }
 
         $url = "https://api.github.com/repos/{$repository->downstream}/commits?sha={$this->source_branch}&per_page=100";
-        if ($repository->latestRelease !== null) {
+        if ($repository->latestRelease !== null && !$this->force) {
             $url .= '&since=' . $this->since($repository->latestRelease);
         }
         $response = $this->fetch($url);
@@ -492,7 +530,10 @@ class ReleaseCommand extends AbstractReleaseCommand
         return (new QuestionHelper())->ask($this->input, $this->output, new ConfirmationQuestion($question, $default));
     }
 
-    private function get_diffs(Repository $repository): Diff
+    /**
+     * @return ?Diff null when the run should stop, as the split could not be checked
+     */
+    private function get_diffs(Repository $repository): ?Diff
     {
         $diff = new Diff();
         if (!$repository->latestRelease) {
@@ -503,9 +544,9 @@ class ReleaseCommand extends AbstractReleaseCommand
         $url = "https://api.github.com/repos/{$repository->downstream}/compare/{$repository->latestRelease->version}...{$target}";
         $response = $this->fetch($url);
         if ($response->getStatusCode() !== 200) {
-            $this->output->writeln("<error>Failed to compare latest release with {$target}</error>");
+            $message = "Failed to compare {$repository->downstream} {$repository->latestRelease->version} with {$target} ({$response->getStatusCode()})";
 
-            return $diff;
+            return $this->problem($message) ? null : $diff;
         }
         $data = json_decode($response->getBody()->getContents());
 
@@ -568,8 +609,7 @@ class ReleaseCommand extends AbstractReleaseCommand
                 return true;
             }
             $newVersion = $suggested;
-            //a release off another branch, such as a backport, must not take the badge from main's
-            $makeLatest = $this->source_branch === 'main';
+            $makeLatest = true;
             $isDraft = false;
         } else {
             $prompt = $suggested === null

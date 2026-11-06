@@ -22,6 +22,7 @@ use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
+use Psr\Http\Client\ClientExceptionInterface;
 use Psr\Http\Client\ClientInterface;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
@@ -59,6 +60,9 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     private int $failures = 0;
     /** heading of the list of file changes being printed */
     private ?string $changesHeading = null;
+    /** @var array<PrepEntry> the assessed packages, for the JSON report */
+    private array $entries = [];
+    private ReleaseOrderReport $order;
 
     public function __construct(?ClientInterface $client = null, ?PackageDependencyReader $dependencyReader = null, ?GitRunner $git = null)
     {
@@ -76,6 +80,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $this->aliasUpdater = new BranchAliasUpdater();
         $this->replaceUpdater = new ReplaceUpdater();
         $this->git = $git ?? new GitRunner();
+        $this->order = new ReleaseOrderReport();
     }
 
     #[\Override]
@@ -104,17 +109,30 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
             return Command::FAILURE;
         }
-        $json = null;
-        if ($format === 'json') {
-            $json = $output;
-            $output = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
+        if ($format !== 'json') {
+            return $this->prepare($input, $output, $format === 'markdown');
         }
+        $errors = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
+
+        try {
+            $status = $this->prepare($input, $errors, false);
+        } catch (\Exception|ClientExceptionInterface $e) {
+            //the JSON is printed however the prep ends, so a workflow can always parse it
+            $errors->writeln("<error>{$e->getMessage()}</error>");
+            $status = Command::FAILURE;
+        }
+        $output->writeln($this->json_report($status === Command::SUCCESS), OutputInterface::OUTPUT_RAW);
+
+        return $status;
+    }
+
+    private function prepare(InputInterface $input, OutputInterface $output, bool $markdown): int
+    {
         $this->registerInputAndOutput($input, $output);
         //optional: the release lookups are public, and a token only raises the rate limit
         $this->token = $this->token($input);
         $dryRun = $this->dry_run = (bool) $input->getOption('dry-run');
         $this->source_branch = $input->getOption('branch') ?? 'main';
-        $markdown = $format === 'markdown';
         $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
 
         $date = $input->getOption('date') ?? date('Y-m-d');
@@ -173,6 +191,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         foreach ($entries as $entry) {
             $this->assess($entry, $path, $overrides);
         }
+        $this->entries = $entries;
 
         $this->report($entries, $markdown);
 
@@ -181,7 +200,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
                 $entry->version = $this->choose($entry);
             }
         }
-        $order = $this->report_order($entries);
+        $this->order = $this->report_order($entries);
 
         $written = [];
         $aliases = [];
@@ -221,15 +240,11 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         } else {
             $output->writeln('<info>Nothing to release.</info>');
         }
-        $json?->writeln($this->json_report($entries, $order), OutputInterface::OUTPUT_RAW);
 
         return Command::SUCCESS;
     }
 
-    /**
-     * @param array<PrepEntry> $entries
-     */
-    private function json_report(array $entries, ReleaseOrderReport $order): string
+    private function json_report(bool $completed): string
     {
         $packages = array_map(static fn (PrepEntry $entry): array => [
             'package' => $entry->package,
@@ -238,13 +253,14 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             'version' => $entry->version,
             'reason' => $entry->reason,
             'warnings' => $entry->warnings,
-        ], $entries);
+        ], $this->entries);
 
         return json_encode([
             'packages' => $packages,
-            'order' => $order->order,
-            'constraint_warnings' => $order->warnings,
-            'release' => in_array(true, array_map(static fn (PrepEntry $entry): bool => $entry->version !== null, $entries), true),
+            'order' => $this->order->order,
+            'constraint_warnings' => $this->order->warnings,
+            'release' => in_array(true, array_map(static fn (PrepEntry $entry): bool => $entry->version !== null, $this->entries), true),
+            'completed' => $completed,
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     }
 
