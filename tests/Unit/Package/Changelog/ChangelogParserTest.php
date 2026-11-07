@@ -271,6 +271,28 @@ class ChangelogParserTest extends TestCase
         );
     }
 
+    public function test_text_after_a_code_block_starts_a_new_line(): void
+    {
+        $changes = $this->parser->parseUnreleased(self::HEADER . <<<'MD'
+            ## Unreleased
+
+            ### Added
+
+            - A new option:
+              ```yaml
+              a: 1
+              ```
+              which defaults
+              to off.
+
+            MD);
+
+        $this->assertSame(
+            ["A new option:\n```yaml\na: 1\n```\nwhich defaults to off."],
+            $changes->entries(ChangelogSection::Added)
+        );
+    }
+
     public function test_unclosed_code_block_is_an_error(): void
     {
         $error = $this->error(self::HEADER . "## Unreleased\n\n### Added\n\n- A new option:\n  ```yaml\n  a: 1\n\n## 1.0.0 - 2026-01-01\n");

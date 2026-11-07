@@ -23,6 +23,7 @@ final class ChangelogParser
         $foundUnreleased = false;
         $section = null;
         $current = null;
+        $afterFence = false;
         $fences = new CodeFences();
 
         foreach (preg_split('/\R/', $markdown) ?: [] as $index => $line) {
@@ -33,9 +34,13 @@ final class ChangelogParser
                 } elseif ($inUnreleased) {
                     throw new ChangelogException('a code block must be part of a "- " entry', $number);
                 }
+                $afterFence = true;
 
                 continue;
             }
+            //a closing fence must stay alone on its line to close the block
+            $joiner = $afterFence ? "\n" : ' ';
+            $afterFence = false;
             if (preg_match('/^## (.+?)\s*$/', $line, $m) === 1) {
                 $inUnreleased = strcasecmp($m[1], 'Unreleased') === 0;
                 if ($inUnreleased && $foundUnreleased) {
@@ -71,7 +76,7 @@ final class ChangelogParser
             } elseif ($current !== null && preg_match('/^\s+- (.*)$/', $line, $m) === 1) {
                 $entries[$section->value][$current] .= "\n- " . $m[1];
             } elseif ($current !== null && preg_match('/^\s+(\S.*)$/', $line, $m) === 1) {
-                $entries[$section->value][$current] .= ' ' . $m[1];
+                $entries[$section->value][$current] .= $joiner . $m[1];
             } else {
                 throw new ChangelogException('expected a "- " entry, an indented continuation of one, or a ### heading', $number);
             }
