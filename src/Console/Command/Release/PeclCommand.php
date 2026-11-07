@@ -62,12 +62,27 @@ class PeclCommand extends AbstractReleaseCommand
 
             return Command::FAILURE;
         }
+
+        try {
+            $head = $this->git->head($path);
+            //git log stops without a word at the shallow boundary, so too few commits would be listed
+            if ($this->git->isShallow($path)) {
+                $this->output->writeln("<error>{$path} is a shallow clone, so its history may not reach the latest release. Clone it in full.</error>");
+
+                return Command::FAILURE;
+            }
+        } catch (RuntimeException $e) {
+            $this->output->writeln("<error>{$path} cannot be read by git: {$e->getMessage()}</error>");
+
+            return Command::FAILURE;
+        }
         $project = new Project(self::REPOSITORY);
         $repository = new Repository();
         $repository->downstream = $project;
         $repository->upstream = $project;
 
         try {
+            $tip = $this->branch_tip(self::REPOSITORY);
             $repository->latestRelease = $this->get_latest_release($repository);
         } catch (GitHubException $e) {
             $this->output->writeln('<error>' . OutputFormatter::escape($e->getMessage()) . '</error>');
@@ -76,6 +91,20 @@ class PeclCommand extends AbstractReleaseCommand
         }
         if ($repository->latestRelease === null) {
             $this->output->writeln("<error>No latest release found for {$repository->upstream}</error>");
+
+            return Command::FAILURE;
+        }
+
+        if ($head !== $tip) {
+            $this->output->writeln(sprintf(
+                '<error>%s is at %s, but %s %s is at %s. Check out and pull %s before releasing.</error>',
+                $path,
+                $head,
+                self::REPOSITORY,
+                $this->source_branch,
+                $tip,
+                $this->source_branch,
+            ));
 
             return Command::FAILURE;
         }

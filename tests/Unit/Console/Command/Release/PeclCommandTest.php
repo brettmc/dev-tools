@@ -45,6 +45,10 @@ class PeclCommandTest extends TestCase
     private array $log = [['sha' => 'abc', 'author' => 'Octo Cat', 'message' => 'Fix hooks (#7)']];
     private ?string $logError = null;
     private int $latestStatus = 200;
+    private string $head = 'abc123';
+    private string $mainTip = 'abc123';
+    private bool $shallow = false;
+    private ?string $headError = null;
     private CommandTester $tester;
 
     #[\Override]
@@ -63,6 +67,7 @@ class PeclCommandTest extends TestCase
             return match (true) {
                 $this->latestStatus !== 200 && str_ends_with($url, '/releases/latest') => new Response($this->latestStatus, [], '{"message": "Server Error"}'),
                 str_ends_with($url, '/releases/latest') => $json(['tag_name' => '1.2.0', 'created_at' => '2026-01-01T00:00:00Z']),
+                str_ends_with($url, '/repos/open-telemetry/opentelemetry-php-instrumentation/git/ref/heads/main') => $json(['object' => ['sha' => $this->mainTip]]),
                 default => new Response(404),
             };
         });
@@ -73,6 +78,8 @@ class PeclCommandTest extends TestCase
 
             return $this->logError === null ? $this->log : throw new RuntimeException($this->logError);
         });
+        $git->method('head')->willReturnCallback(fn (): string => $this->headError === null ? $this->head : throw new RuntimeException($this->headError));
+        $git->method('isShallow')->willReturnCallback(fn (): bool => $this->shallow);
 
         $this->tester = new CommandTester(new PeclCommand(new GitHub($client), $git));
     }
@@ -206,6 +213,43 @@ class PeclCommandTest extends TestCase
 
         $this->assertSame(Command::FAILURE, $status);
         $this->assertStringContainsString('fatal: not a git repository', $this->tester->getDisplay());
+    }
+
+    public function test_shallow_clone_fails_before_calling_github(): void
+    {
+        $this->shallow = true;
+
+        $status = $this->tester->execute(['--path' => $this->root->url()]);
+
+        $this->assertSame(Command::FAILURE, $status);
+        $this->assertStringContainsString('is a shallow clone', $this->tester->getDisplay());
+        $this->assertSame([], $this->urls);
+        $this->assertSame([], $this->logReads);
+    }
+
+    public function test_path_that_is_not_a_git_checkout_fails_before_calling_github(): void
+    {
+        $this->headError = 'fatal: not a git repository';
+
+        $status = $this->tester->execute(['--path' => $this->root->url()]);
+
+        $this->assertSame(Command::FAILURE, $status);
+        $this->assertStringContainsString('cannot be read by git: fatal: not a git repository', $this->tester->getDisplay());
+        $this->assertSame([], $this->urls);
+    }
+
+    public function test_checkout_behind_main_fails(): void
+    {
+        $this->mainTip = 'def456';
+
+        $status = $this->tester->execute(['--path' => $this->root->url()]);
+
+        $this->assertSame(Command::FAILURE, $status);
+        $this->assertStringContainsString(
+            "{$this->root->url()} is at abc123, but open-telemetry/opentelemetry-php-instrumentation main is at def456. Check out and pull main before releasing.",
+            $this->tester->getDisplay()
+        );
+        $this->assertSame([], $this->logReads);
     }
 
     private function packageXml(): string

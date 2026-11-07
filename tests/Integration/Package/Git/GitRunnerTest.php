@@ -260,6 +260,66 @@ class GitRunnerTest extends TestCase
         (new GitRunner())->log($this->dir, str_repeat('a', 40), 'src/API', null);
     }
 
+    /**
+     * @dataProvider shaTakers
+     */
+    public function test_sha_is_a_revision_not_an_option(callable $call): void
+    {
+        $this->commit();
+        $this->commitFile('src/API/a.php', 'Add a', '2026-01-01T00:00:00Z');
+        $written = $this->dir . '/written';
+
+        try {
+            $call(new GitRunner(), $this->dir, "--output={$written}");
+            $this->fail('No RuntimeException');
+        } catch (RuntimeException) {
+        }
+        $this->assertFileDoesNotExist($written);
+    }
+
+    public static function shaTakers(): iterable
+    {
+        yield 'log' => [static fn (GitRunner $git, string $dir, string $sha) => $git->log($dir, $sha, 'src/API', null)];
+        yield 'tree' => [static fn (GitRunner $git, string $dir, string $sha) => $git->tree($dir, $sha, 'src/API')];
+        yield 'isAncestor' => [static fn (GitRunner $git, string $dir, string $sha) => $git->isAncestor($dir, $sha, 'HEAD')];
+        yield 'fileAt' => [static fn (GitRunner $git, string $dir, string $sha) => $git->fileAt($dir, $sha, 'src/API/a.php')];
+    }
+
+    public function test_has_commit_takes_a_revision_not_an_option(): void
+    {
+        $this->commit();
+
+        $this->assertFalse((new GitRunner())->hasCommit($this->dir, '--all'));
+    }
+
+    public function test_file_at_a_revision_is_its_content_then(): void
+    {
+        $this->commit();
+        $this->commitFile('src/API/a b.php', 'Add a', '2026-01-01T00:00:00Z');
+        file_put_contents($this->dir . '/src/API/a b.php', '<?php // uncommitted');
+
+        $this->assertSame('<?php', (new GitRunner())->fileAt($this->dir, 'HEAD', 'src/API/a b.php'));
+    }
+
+    public function test_file_not_at_a_revision_is_null(): void
+    {
+        $this->commit();
+        $this->commitFile('src/API/a.php', 'Add a', '2026-01-01T00:00:00Z');
+
+        $this->assertNull((new GitRunner())->fileAt($this->dir, 'HEAD^1', 'src/API/a.php'));
+        $this->assertNull((new GitRunner())->fileAt($this->dir, 'HEAD', 'src/API/b.php'));
+        $this->assertNull((new GitRunner())->fileAt($this->dir, 'HEAD', 'src/API'));
+    }
+
+    public function test_file_at_fails_for_a_commit_not_in_the_repository(): void
+    {
+        $this->commit();
+
+        $this->expectException(RuntimeException::class);
+
+        (new GitRunner())->fileAt($this->dir, str_repeat('a', 40), 'composer.json');
+    }
+
     public function test_untracked_files_under_a_prefix_are_listed(): void
     {
         $this->commit();

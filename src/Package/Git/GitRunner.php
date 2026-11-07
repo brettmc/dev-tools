@@ -75,7 +75,7 @@ class GitRunner
      */
     public function hasCommit(string $path, string $sha): bool
     {
-        return $this->test($path, ['rev-parse', '--verify', '--quiet', "{$sha}^{commit}"]);
+        return $this->test($path, ['rev-parse', '--verify', '--quiet', '--end-of-options', "{$sha}^{commit}"]);
     }
 
     /**
@@ -86,7 +86,7 @@ class GitRunner
      */
     public function isAncestor(string $path, string $ancestor, string $descendant): bool
     {
-        return $this->test($path, ['merge-base', '--is-ancestor', $ancestor, $descendant]);
+        return $this->test($path, ['merge-base', '--is-ancestor', '--end-of-options', $ancestor, $descendant]);
     }
 
     /**
@@ -100,12 +100,28 @@ class GitRunner
     public function tree(string $path, string $sha, string $prefix): ?string
     {
         //a trailing slash would list the directory's entries, not the directory
-        $entry = trim($this->run($path, ['ls-tree', $sha, '--', trim($prefix, '/')]));
+        $entry = trim($this->run($path, ['ls-tree', '--end-of-options', $sha, '--', trim($prefix, '/')]));
         if (preg_match('/^\d+ tree ([0-9a-f]+)\t/', $entry, $matches) !== 1) {
             return null;
         }
 
         return $matches[1];
+    }
+
+    /**
+     * The content of $file in $sha, or null when $sha has no file there.
+     *
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout or $sha
+     *         is not in it
+     */
+    public function fileAt(string $path, string $sha, string $file): ?string
+    {
+        $entry = $this->run($path, ['ls-tree', '-z', '--end-of-options', $sha, '--', $file]);
+        if (preg_match('/^\d+ blob ([0-9a-f]+)\t/', $entry, $matches) !== 1) {
+            return null;
+        }
+
+        return $this->run($path, ['cat-file', 'blob', $matches[1]]);
     }
 
     /**
@@ -124,7 +140,7 @@ class GitRunner
         if ($since !== null) {
             $args[] = "--since={$since}";
         }
-        array_push($args, $sha, '--', trim($prefix, '/'));
+        array_push($args, '--end-of-options', $sha, '--', trim($prefix, '/'));
 
         $commits = [];
         foreach (explode("\x1e", $this->run($path, $args)) as $record) {

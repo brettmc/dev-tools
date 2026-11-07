@@ -128,6 +128,68 @@ class ChangelogCheckCommandTest extends TestCase
         $this->assertStringNotContainsString('Add an entry under Unreleased', $this->display());
     }
 
+    public function test_deleted_changelog_fails(): void
+    {
+        unlink("{$this->dir}/src/API/CHANGELOG.md");
+        $this->commit('Drop API changelog');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +CHANGELOG.md deleted$/m', $this->display());
+
+        putenv('GITHUB_ACTIONS=true');
+        $this->check('HEAD^1', 'HEAD');
+        $this->assertStringContainsString("\n::error file=src/API/CHANGELOG.md::src/API/CHANGELOG.md was deleted\n", $this->display());
+    }
+
+    public function test_uncommitted_deleted_changelog_fails(): void
+    {
+        $this->git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+        unlink("{$this->dir}/src/API/CHANGELOG.md");
+
+        $this->assertSame(Command::FAILURE, $this->check());
+        $this->assertMatchesRegularExpression('/^  src\/API +CHANGELOG.md deleted$/m', $this->display());
+    }
+
+    public function test_a_range_is_checked_at_its_last_revision_not_the_working_tree(): void
+    {
+        $this->write('src/SDK/CHANGELOG.md', self::CHANGELOG . "* Not a dash.\n");
+        $this->write('src/Context/CHANGELOG.md', self::CHANGELOG);
+        $this->commit('Break SDK, add a Context changelog');
+        $head = trim($this->git('rev-parse', 'HEAD'));
+        $this->git('checkout', '--quiet', 'HEAD^1');
+
+        foreach ([['HEAD', $head], ["HEAD..{$head}"], ["HEAD...{$head}"]] as $revisions) {
+            $this->assertSame(Command::FAILURE, $this->check(...$revisions));
+            $this->assertStringContainsString('src/SDK/CHANGELOG.md: line 8:', $this->display());
+            $this->assertMatchesRegularExpression('/^  src\/Context +CHANGELOG.md updated$/m', $this->display());
+        }
+    }
+
+    public function test_a_range_with_no_end_is_checked_at_head(): void
+    {
+        $this->write('src/SDK/CHANGELOG.md', self::CHANGELOG . "* Not a dash.\n");
+        $this->commit('Break SDK');
+        $this->write('src/SDK/CHANGELOG.md', self::CHANGELOG);
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1..'));
+        $this->assertStringContainsString('src/SDK/CHANGELOG.md: line 8:', $this->display());
+    }
+
+    public function test_one_revision_is_checked_against_the_working_tree(): void
+    {
+        $this->write('src/SDK/CHANGELOG.md', self::CHANGELOG . "* Not a dash.\n");
+        $this->commit('Break SDK');
+        $this->write('src/SDK/CHANGELOG.md', self::CHANGELOG . "- Fixed it.\n");
+
+        $this->assertSame(Command::SUCCESS, $this->check('HEAD^1'));
+    }
+
+    public function test_more_than_two_revisions_fail(): void
+    {
+        $this->assertSame(Command::FAILURE, $this->check('HEAD', 'HEAD', 'HEAD'));
+        $this->assertStringContainsString('at most two revisions', $this->display());
+    }
+
     public function test_unchanged_changelog_is_not_parsed_for_a_range(): void
     {
         $this->write('src/SDK/CHANGELOG.md', self::CHANGELOG . "* Not a dash.\n");

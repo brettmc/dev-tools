@@ -165,6 +165,7 @@ For each package with changed files it prints one status:
 | `changed, CHANGELOG.md updated` | No |
 | `changed, CHANGELOG.md not updated` | Yes |
 | `changed, has no CHANGELOG.md` | No |
+| `CHANGELOG.md deleted` | Yes |
 | `CHANGELOG.md updated` | No |
 | `Markdown only, no entry needed` | No |
 
@@ -177,6 +178,10 @@ The arguments are revisions for `git diff`. A pull request workflow checks out i
 ```shell
 vendor/bin/otel changelog:check HEAD^1 HEAD
 ```
+
+Changelogs are read as they are in the last revision, so the result doesn't depend on what is checked
+out. `A..B` and `A...B` are read at `B`. One revision is compared with the working tree, as `git diff`
+does.
 
 Without arguments it checks everything since the merge base with `origin/main`, including uncommitted
 and untracked files, and parses every changelog. Run that before pushing:
@@ -568,13 +573,16 @@ The opentelemetry extension is released to PECL from
 asks for the new version and its stability. Then it moves the current release into `<changelog>`, and
 prints the updated XML.
 
+It fails on a shallow clone, whose history may not reach the latest release. It also fails unless the
+checkout is at the tip of `main` on GitHub.
+
 ```shell
 bin/otel release:pecl --path=../opentelemetry-php-instrumentation
 ```
 
 | Option | Meaning |
 |---|---|
-| `--path` | opentelemetry-php-instrumentation checkout, at the commit being released (default: working directory) |
+| `--path` | opentelemetry-php-instrumentation checkout, at the tip of `main` (default: working directory) |
 | `--force` | Add a new version even with no changes |
 
 Then:

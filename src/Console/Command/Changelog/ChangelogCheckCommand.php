@@ -58,6 +58,11 @@ class ChangelogCheckCommand extends Command
         }
         /** @var list<string> $revisions */
         $revisions = $input->getArgument('revisions');
+        if (count($revisions) > 2) {
+            $output->writeln('<error>' . self::NAME . ' takes at most two revisions, as git diff does</error>');
+
+            return Command::FAILURE;
+        }
 
         try {
             $prefixes = MonorepoCheckout::read($path)->prefixes;
@@ -69,6 +74,7 @@ class ChangelogCheckCommand extends Command
                 $output->writeln(OutputFormatter::escape('Changes in git diff ' . implode(' ', $revisions) . ':'));
                 $changed = $this->git->changedFiles($path, $revisions);
             }
+            $changelogs = $this->changelogs($path, $prefixes, self::target($revisions));
         } catch (RuntimeException $e) {
             $output->writeln('<error>' . OutputFormatter::escape($e->getMessage()) . '</error>');
 
@@ -77,9 +83,9 @@ class ChangelogCheckCommand extends Command
 
         $width = max(array_map('strlen', $prefixes ?: ['']));
         $found = false;
-        $missing = false;
+        $missing = $deleted = false;
         foreach ($prefixes as $prefix) {
-            $status = $this->status($path, $prefix, $changed);
+            $status = $this->status($prefix, $changed, $changelogs[$prefix] !== null);
             if ($status === null) {
                 continue;
             }
@@ -88,6 +94,9 @@ class ChangelogCheckCommand extends Command
             if ($status === 'changed, CHANGELOG.md not updated') {
                 $missing = true;
                 $this->annotate($output, "{$prefix}/" . self::CHANGELOG_FILE, "{$prefix} changed without an entry in its CHANGELOG.md");
+            } elseif ($status === 'CHANGELOG.md deleted') {
+                $deleted = true;
+                $this->annotate($output, "{$prefix}/" . self::CHANGELOG_FILE, "{$prefix}/" . self::CHANGELOG_FILE . ' was deleted');
             }
         }
         if (!$found) {
@@ -96,12 +105,13 @@ class ChangelogCheckCommand extends Command
         $errors = 0;
         foreach ($prefixes as $prefix) {
             $file = "{$prefix}/" . self::CHANGELOG_FILE;
-            if (($revisions !== [] && !in_array($file, $changed, true)) || !is_file("{$path}/{$file}")) {
+            $changelog = $changelogs[$prefix];
+            if (($revisions !== [] && !in_array($file, $changed, true)) || $changelog === null) {
                 continue;
             }
 
             try {
-                $this->parser->parseUnreleased((string) file_get_contents("{$path}/{$file}"));
+                $this->parser->parseUnreleased($changelog);
             } catch (ChangelogException $e) {
                 $errors++;
                 $output->writeln('<error>' . OutputFormatter::escape("{$file}: {$e->getMessage()}") . '</error>');
@@ -114,13 +124,54 @@ class ChangelogCheckCommand extends Command
             $output->writeln("If it doesn't, a maintainer can add the skip-changelog label.");
         }
 
-        return !$missing && $errors === 0 ? Command::SUCCESS : Command::FAILURE;
+        return !$missing && !$deleted && $errors === 0 ? Command::SUCCESS : Command::FAILURE;
+    }
+
+    /**
+     * The revision whose files git diff compares against, or null for the working tree. One
+     * revision, or none, compares with the working tree. An open-ended range ends at HEAD.
+     *
+     * @param list<string> $revisions
+     */
+    private static function target(array $revisions): ?string
+    {
+        if (count($revisions) === 2) {
+            return $revisions[1];
+        }
+        if (count($revisions) === 1 && preg_match('/\.\.\.?(.*)$/', $revisions[0], $matches) === 1) {
+            return $matches[1] === '' ? 'HEAD' : $matches[1];
+        }
+
+        return null;
+    }
+
+    /**
+     * Each prefix's CHANGELOG.md as it is in $revision, or in the working tree when $revision is
+     * null. A prefix with no CHANGELOG.md there maps to null.
+     *
+     * @param list<string> $prefixes
+     * @throws RuntimeException with git's own error, when $revision is not in the checkout
+     * @return array<string, ?string>
+     */
+    private function changelogs(string $path, array $prefixes, ?string $revision): array
+    {
+        $changelogs = [];
+        foreach ($prefixes as $prefix) {
+            $file = "{$prefix}/" . self::CHANGELOG_FILE;
+            $changelogs[$prefix] = match (true) {
+                $revision !== null => $this->git->fileAt($path, $revision, $file),
+                is_file("{$path}/{$file}") => (string) file_get_contents("{$path}/{$file}"),
+                default => null,
+            };
+        }
+
+        return $changelogs;
     }
 
     /**
      * @param list<string> $changed
      */
-    private function status(string $path, string $prefix, array $changed): ?string
+    private function status(string $prefix, array $changed, bool $hasChangelog): ?string
     {
         $source = $changelog = $docs = false;
         foreach ($changed as $file) {
@@ -138,7 +189,8 @@ class ChangelogCheckCommand extends Command
 
         return match (true) {
             !$source && !$changelog && !$docs => null,
-            !is_file("{$path}/{$prefix}/" . self::CHANGELOG_FILE) => 'changed, has no CHANGELOG.md',
+            !$hasChangelog && $changelog => 'CHANGELOG.md deleted',
+            !$hasChangelog => 'changed, has no CHANGELOG.md',
             $source && $changelog => 'changed, CHANGELOG.md updated',
             $source => 'changed, CHANGELOG.md not updated',
             $changelog => 'CHANGELOG.md updated',
