@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Package\Spi;
 
-use OpenTelemetry\DevTools\Util\Path;
 use RuntimeException;
 use Symfony\Component\Process\Process;
 
@@ -25,7 +24,7 @@ class PackageDependencyReader
         if (!is_file("{$path}/vendor/autoload.php")) {
             throw new RuntimeException("{$path}/vendor/autoload.php not found, run `composer install` in {$path} first");
         }
-        $process = new Process([$this->php, self::SCRIPT, Path::absolute($path)], $path);
+        $process = new Process([$this->php, self::SCRIPT, $path], $path);
         $process->run();
         if (!$process->isSuccessful()) {
             throw new RuntimeException(sprintf(

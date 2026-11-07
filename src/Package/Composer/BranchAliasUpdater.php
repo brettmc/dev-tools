@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Package\Composer;
 
+use Composer\Semver\Constraint\Constraint;
 use Composer\Semver\VersionParser;
+use UnexpectedValueException;
 
 /**
  * Keeps `extra.branch-alias` in a package's composer.json in step with its released versions.
@@ -37,8 +39,14 @@ class BranchAliasUpdater
         if (!preg_match('/^(\d+(?:\.\d+)?)\.x-dev$/', $alias, $matches)) {
             return false;
         }
+        $parser = new VersionParser();
 
-        return VersionMatcher::matches((new VersionParser())->parseConstraints("{$matches[1]}.*"), $version);
+        try {
+            return $parser->parseConstraints("{$matches[1]}.*")
+                ->matches(new Constraint('==', $parser->normalize($version)));
+        } catch (UnexpectedValueException) {
+            return false;
+        }
     }
 
     /**

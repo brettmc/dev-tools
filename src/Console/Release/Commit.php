@@ -6,7 +6,7 @@ namespace OpenTelemetry\DevTools\Console\Release;
 
 class Commit
 {
+    public string $sha;
     public string $message;
-    public string $subject;
-    public string $author;
+    public PullRequest $pullRequest;
 }

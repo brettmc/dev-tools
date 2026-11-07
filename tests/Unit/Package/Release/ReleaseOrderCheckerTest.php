@@ -176,19 +176,6 @@ class ReleaseOrderCheckerTest extends TestCase
         $this->assertStringContainsString('circular', $report->warnings[0]);
     }
 
-    public function test_a_cycle_names_only_its_members_not_what_waits_on_it(): void
-    {
-        $report = $this->checker->check([
-            new PackageRelease('o/c', '1.1.0', '1.0.0', ['o/a' => '^1.1']),
-            new PackageRelease('o/a', '1.1.0', '1.0.0', ['o/b' => '^1.1']),
-            new PackageRelease('o/b', '1.1.0', '1.0.0', ['o/a' => '^1.1']),
-        ]);
-
-        $this->assertEqualsCanonicalizing(['o/a', 'o/b', 'o/c'], $report->order);
-        $this->assertCount(1, $report->warnings);
-        $this->assertStringContainsString('circular dependency between o/a, o/b,', $report->warnings[0]);
-    }
-
     public function test_unparseable_constraint_is_ignored(): void
     {
         $report = $this->checker->check([

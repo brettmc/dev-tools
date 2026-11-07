@@ -8,15 +8,14 @@ use Composer\Command\BaseCommand as ComposerBaseCommand;
 use Composer\Composer;
 use Composer\Console\Application as ComposerApplication;
 use Composer\Factory;
-use Composer\IO\ConsoleIO;
 use Composer\IO\NullIO;
 use InvalidArgumentException;
 use OpenTelemetry\DevTools\Console\Command\CommandRunner;
+use OpenTelemetry\DevTools\Util\WorkingDirectoryResolver;
 use ReflectionClass;
 use RuntimeException;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Helper\HelperSet;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
@@ -45,14 +44,11 @@ trait UsesThirdPartyCommandTrait
         OutputInterface $output,
         ?string $workingDirectory = null
     ): int {
-        $oldWorkingDir = getcwd() ?: throw new RuntimeException('The working directory cannot be read');
+        $oldWorkingDir = WorkingDirectoryResolver::create()->resolve();
 
         try {
             if (is_string($workingDirectory) && is_dir($workingDirectory)) {
                 chdir($workingDirectory);
-            }
-            if ($command instanceof ComposerBaseCommand) {
-                $this->setComposerIO($command, $input, $output);
             }
 
             return $this->getCommandRunner()->run($command, $input, $output);
@@ -65,16 +61,6 @@ trait UsesThirdPartyCommandTrait
         } finally {
             chdir($oldWorkingDir);
         }
-    }
-
-    protected function setComposerIO(ComposerBaseCommand $command, InputInterface $input, OutputInterface $output): void
-    {
-        foreach (Factory::createAdditionalStyles() as $name => $style) {
-            if (!$output->getFormatter()->hasStyle($name)) {
-                $output->getFormatter()->setStyle($name, $style);
-            }
-        }
-        $command->setIO(new ConsoleIO($input, $output, $command->getHelperSet() ?? new HelperSet()));
     }
 
     /**

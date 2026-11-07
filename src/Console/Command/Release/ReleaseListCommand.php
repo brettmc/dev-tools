@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
+use Http\Discovery\Psr18ClientDiscovery;
 use OpenTelemetry\DevTools\Console\Release\Release;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
@@ -11,6 +12,7 @@ use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Yaml\Parser;
 
 class ReleaseListCommand extends AbstractReleaseCommand
 {
@@ -20,7 +22,6 @@ class ReleaseListCommand extends AbstractReleaseCommand
         $this
             ->setName('release:list')
             ->setDescription('List the latest version of each package')
-            ->addOption('path', null, InputOption::VALUE_OPTIONAL, 'path to a monorepo checkout (default: working directory)')
             ->addOption('token', ['t'], InputOption::VALUE_OPTIONAL, 'github token')
             ->addOption('stable', null, InputOption::VALUE_NONE, 'only show versions with a 1.0 release')
             ->addOption('unstable', null, InputOption::VALUE_NONE, 'only show versions without a 1.0 release')
@@ -36,17 +37,18 @@ class ReleaseListCommand extends AbstractReleaseCommand
             throw new \InvalidArgumentException('Can only use one of stable/unstable');
         }
         $this->token = $this->token($input);
+        $this->sources = self::AVAILABLE_REPOS;
+        $this->client = Psr18ClientDiscovery::find();
+        $this->parser = new Parser();
         $this->registerInputAndOutput($input, $output);
-        $path = $this->checkoutPath($input->getOption('path'));
-        if ($path === null) {
-            return Command::FAILURE;
-        }
 
-        $monorepo = $this->read_monorepo($path);
-        if ($monorepo === null) {
+        try {
+            $found = $this->find_repositories();
+        } catch (\Exception $e) {
+            $this->output->writeln("<error>{$e->getCode()} {$e->getMessage()}</error>");
+
             return Command::FAILURE;
         }
-        $found = $this->split_repositories($monorepo, $monorepo->name, null);
         if (count($found) === 0) {
             $this->output->writeln('<error>No repositories found!</error>');
 

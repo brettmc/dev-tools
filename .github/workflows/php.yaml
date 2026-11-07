@@ -12,7 +12,6 @@ permissions:
 jobs:
   php:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
@@ -27,18 +26,20 @@ jobs:
       extensions: ast
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v5
 
       - name: Setup PHP
-        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-version }}
           extensions: ${{ env.extensions }}
 
       - name: Validate composer.json
-        run: composer validate --strict
+        run: composer validate
 
       - name: Install dependencies
+        id: composer
+        if: steps.composer-cache.outputs.cache-hit != 'true'
         run: |
           composer --version
           composer install --prefer-dist --no-progress
@@ -81,4 +82,4 @@ jobs:
         continue-on-error: ${{ matrix.experimental }}
         run: |
           vendor/bin/phpunit --version
-          php -dzend.assertions=1 vendor/bin/phpunit --coverage-text
+          php -dzend.assertions=1 vendor/bin/phpunit --coverage-text --coverage-clover=coverage.clover

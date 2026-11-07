@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
-use OpenTelemetry\DevTools\Console\Release\GitHub;
+use Http\Discovery\Psr18ClientDiscovery;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasStatus;
 use OpenTelemetry\DevTools\Package\Composer\BranchAliasUpdater;
-use OpenTelemetry\DevTools\Util\Path;
+use Psr\Http\Client\ClientInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
@@ -16,6 +16,7 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\ConsoleSectionOutput;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Yaml\Parser;
 
 /**
  * Update `extra.branch-alias` in each package of a monorepo checkout, so that the alias for the
@@ -25,14 +26,18 @@ class BranchAliasCommand extends AbstractReleaseCommand
 {
 
     private BranchAliasUpdater $updater;
+    private ?ClientInterface $clientOverride;
     private string $branch;
     /** Packages this command was asked to update but could not, which makes the run a failure. */
     private int $failures = 0;
 
-    public function __construct(?BranchAliasUpdater $updater = null, ?GitHub $github = null)
+    public function __construct(?BranchAliasUpdater $updater = null, ?ClientInterface $client = null)
     {
-        parent::__construct($github);
+        parent::__construct();
         $this->updater = $updater ?? new BranchAliasUpdater();
+        //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
+        //when no PSR-18 client is installed, which should not happen merely by listing the commands
+        $this->clientOverride = $client;
     }
 
     #[\Override]
@@ -55,17 +60,22 @@ class BranchAliasCommand extends AbstractReleaseCommand
         $this->token = $this->token($input);
         $this->branch = $input->getOption('branch') ?? 'main';
         $this->dry_run = $input->getOption('dry-run');
+        $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
         $this->registerInputAndOutput($input, $output);
-        $path = $this->checkoutPath($input->getOption('path'));
-        if ($path === null) {
-            return Command::FAILURE;
-        }
 
-        $monorepo = $this->read_monorepo($path);
-        if ($monorepo === null) {
+        $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
+        $this->parser = new Parser();
+
+        try {
+            $found = $this->find_split_packages($path, $input->getOption('filter'));
+        } catch (\Exception $e) {
+            $this->output->writeln("<error>{$e->getCode()} {$e->getMessage()}</error>");
+
             return Command::FAILURE;
         }
-        $found = $this->split_repositories($monorepo, $monorepo->name, $input->getOption('filter'));
+        if ($found === null) {
+            return Command::FAILURE;
+        }
         if (count($found) === 0) {
             $this->output->writeln('<error>No packages found!</error>');
 
@@ -143,7 +153,7 @@ class BranchAliasCommand extends AbstractReleaseCommand
             return [$package, $version, '', '', 'skipped, cannot parse version'];
         }
 
-        $composerFile = Path::contained($path, $repository->upstream->path, self::COMPOSER_FILE);
+        $composerFile = $this->contained_file($path, $repository->upstream->path, self::COMPOSER_FILE);
         if ($composerFile === null) {
             $this->output->writeln(sprintf(
                 '<error>[%s] split prefix "%s" resolves outside %s, refusing to write</error>',

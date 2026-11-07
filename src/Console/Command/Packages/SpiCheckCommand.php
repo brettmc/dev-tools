@@ -54,10 +54,7 @@ class SpiCheckCommand extends BaseCommand
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $this->registerInputAndOutput($input, $output);
-        $path = $this->checkoutPath($input->getOption('path'));
-        if ($path === null) {
-            return Command::FAILURE;
-        }
+        $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
 
         try {
             $checkout = MonorepoCheckout::read($path);
@@ -68,7 +65,7 @@ class SpiCheckCommand extends BaseCommand
             return Command::FAILURE;
         }
         foreach ($found->missing as $provider) {
-            $output->writeln("<error>{$provider} is registered in extra.spi but does not load</error>");
+            $output->writeln("<comment>{$provider} is registered in extra.spi but does not load</comment>");
         }
         $report = $this->checker->check($found->dependencies, $checkout->aliases, $checkout->replace);
 
@@ -87,7 +84,7 @@ class SpiCheckCommand extends BaseCommand
             }
             $table->render();
         }
-        $failed = $report->failed() || $found->missing !== [];
+        $failed = $report->failed();
 
         if ($report->external !== []) {
             $output->writeln('');

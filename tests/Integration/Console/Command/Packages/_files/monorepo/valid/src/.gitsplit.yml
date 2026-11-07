@@ -1,0 +1,20 @@
+# Path to A cache directory Used to speed up the split over time by reusing git's objects
+cache_url: "/cache/gitsplit"
+
+# Path to the repository to split (default = current path)
+project_url: "https://example.com/foo/bar.git"
+
+# List of splits.
+splits:
+  - prefix: "package/A"
+    target: "https://example.com/foo/A.git"
+  - prefix: "package/B"
+    target: "https://example.com/foo/B.git"
+  - prefix: "package/C"
+    target: "https://example.com/foo/C.git"
+
+# List of references to split (defined as regexp)
+origins:
+  - ^main$
+  - ^v\d+\.\d+\.\d+$
+  - ^\d+\.\d+\.\d+$

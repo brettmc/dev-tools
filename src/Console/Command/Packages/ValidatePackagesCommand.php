@@ -5,14 +5,15 @@ declare(strict_types=1);
 namespace OpenTelemetry\DevTools\Console\Command\Packages;
 
 use Composer\Command\ValidateCommand;
+use Composer\Util\Filesystem;
 use OpenTelemetry\DevTools\Console\Command\BaseCommand;
 use OpenTelemetry\DevTools\Console\Command\CommandRunner;
 use OpenTelemetry\DevTools\Console\Command\Packages\Behavior\UsesThirdPartyCommandTrait;
-use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
-use OpenTelemetry\DevTools\Util\Path;
-use RuntimeException;
+use OpenTelemetry\DevTools\Package\Composer\ConfigResolverInterface;
+use OpenTelemetry\DevTools\Util\WorkingDirectoryResolver;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Output\ConsoleOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
 
@@ -23,13 +24,13 @@ class ValidatePackagesCommand extends BaseCommand
     public const NAME = 'packages:composer:validate';
     public const DESCRIPTION = 'Validates composer files of the individual packages';
 
-    /**
-     * @param ?string $root the monorepo checkout, by default the working directory when the command runs
-     */
-    public function __construct(private readonly ?string $root = null, ?CommandRunner $commandRunner = null)
+    private ConfigResolverInterface $resolver;
+
+    public function __construct(ConfigResolverInterface $resolver, ?CommandRunner $commandRunner = null)
     {
         parent::__construct(self::NAME);
 
+        $this->resolver = $resolver;
         $this->commandRunner = $commandRunner ?? CommandRunner::create();
     }
 
@@ -44,20 +45,11 @@ class ValidatePackagesCommand extends BaseCommand
     {
         $this->registerInputAndOutput($input, $output);
 
-        $root = Path::absolute($this->root ?? '.');
-        $this->writeIntro($root);
+        $this->writeIntro();
 
-        try {
-            $prefixes = MonorepoCheckout::read($root)->prefixes;
-        } catch (RuntimeException $e) {
-            $this->writeError($e->getMessage());
+        $configs = $this->resolver->resolve();
 
-            return self::FAILURE;
-        }
-
-        foreach ($prefixes as $prefix) {
-            $composerFile = "{$prefix}/composer.json";
-
+        foreach ($configs as $directory => $composerFile) {
             try {
                 $this->writeBlankLine();
                 $this->writeSection(sprintf(
@@ -65,7 +57,7 @@ class ValidatePackagesCommand extends BaseCommand
                     $composerFile
                 ));
 
-                $res = $this->runValidateCommand("{$root}/{$composerFile}", "{$root}/{$prefix}");
+                $res = $this->runValidateCommand($composerFile, $directory);
 
                 if ($res !== 0) {
                     $this->writeError(sprintf(
@@ -89,20 +81,26 @@ class ValidatePackagesCommand extends BaseCommand
 
     private function runValidateCommand(string $composerFile, string $directory): int
     {
+        if (!(new Filesystem())->isAbsolutePath($composerFile)) {
+            $composerFile = WorkingDirectoryResolver::create()->resolve() . '/' . $composerFile;
+        }
+
         return $this->createAndRunCommand(
             ValidateCommand::class,
             new ArrayInput([
                 'file' => $composerFile,
             ]),
-            $this->getOutput(),
+            new ConsoleOutput(
+                OutputInterface::VERBOSITY_DEBUG
+            ),
             $directory,
         );
     }
 
-    private function writeIntro(string $root): void
+    private function writeIntro(): void
     {
         $this->writeTitle();
-        $this->writeSection('Validating composer files in: ' . $root);
+        $this->writeSection('Validating composer files in: ' . WorkingDirectoryResolver::create()->resolve());
         $this->writeBlankLine();
     }
 }

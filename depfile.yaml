@@ -1,0 +1,13 @@
+#baseline: depfile.baseline.yml
+paths:
+    - ./src
+exclude_files:
+    - '#.*test.*#'
+layers:
+    -   name: App
+        collectors:
+            -   type: className
+                regex: ^App\\*
+
+ruleset:
+    App:

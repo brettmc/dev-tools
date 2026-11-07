@@ -6,7 +6,6 @@ namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Release;
 
 use Nyholm\Psr7\Response;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseCommand;
-use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
@@ -16,7 +15,6 @@ use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestInterface;
 use RuntimeException;
-use Symfony\Component\Console\Exception\InvalidOptionException;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\ConsoleOutput;
 use Symfony\Component\Console\Output\StreamOutput;
@@ -36,13 +34,13 @@ class ReleaseCommandTest extends TestCase
     private string $latestTag = '1.44.0';
     /** @var array<string, array{0: string, 1: string, 2: ?string}> prefix, latest tag and changelog by project; sem-conv alone when empty */
     private array $splits = [];
-    /** .gitsplit.yml as written, when a test needs it malformed */
-    private ?string $gitsplit = null;
     private ProviderDependencies $dependencies;
     private ?RuntimeException $readError = null;
     private ?string $head = 'abc123';
     /** @var list<string> */
     private array $changes = [];
+    /** @var array<string, ?string> CHANGELOG.md of the split repository by project, null for none; the upstream one when unset */
+    private array $splitChangelogs = [];
     /** @var list<string> the branch tip for each lookup in turn, the last repeating */
     private array $tips = ['abc123'];
     /** @var list<string> commit messages of the split since its latest release, oldest first */
@@ -51,27 +49,12 @@ class ReleaseCommandTest extends TestCase
     private ?int $splitMatch = null;
     /** whether gitsplit has pushed a commit with the checkout's tree */
     private bool $splitPushed = true;
-    /** whether --sha is the branch tip or one of its ancestors in the checkout */
-    private bool $onBranch = true;
-    /** whether the checkout has the branch tip on GitHub */
-    private bool $hasTip = true;
+    /** status of --sha compared to the branch on GitHub */
+    private string $shaStatus = 'behind';
     /** @var list<array{0: string, 1: string}> sha and prefix of each tree read from the checkout */
     private array $treeReads = [];
-    /** @var list<array{0: string, 1: string, 2: ?string}> sha, prefix and since of each log read from the checkout */
-    private array $logReads = [];
-    /** @var list<string> untracked files under the prefixes, as `git status --porcelain` lines */
-    private array $untracked = [];
-    /** @var list<list<string>> the prefixes of each untracked file lookup */
-    private array $untrackedPrefixes = [];
-    private bool $shallow = false;
-    /** git's error when reading the commits of a prefix */
-    private ?string $logError = null;
-    /** a bug met while reading the commits of a prefix */
-    private ?\Error $logCrash = null;
     /** whether the monorepo has commits to each package since its latest release */
     private bool $upstreamCommits = true;
-    /** @var list<array{sha: string, author: string, message: string}> the commits to each package, when it has some */
-    private array $log = [['sha' => 'abc', 'author' => 'Octo Cat', 'message' => 'Add attributes']];
     /** @var array<string, int> status of the release request by project, 201 when unset */
     private array $releaseStatus = [];
     /** project whose release request fails in transport */
@@ -80,14 +63,6 @@ class ReleaseCommandTest extends TestCase
     private int $compareStatus = 200;
     /** status of the latest release lookups */
     private int $latestStatus = 200;
-    /** status of the commit list of each split */
-    private int $splitStatus = 200;
-    /** @var list<string> branches of the monorepo on GitHub */
-    private array $branches = ['main', '1.x'];
-    /** commits in each page of the split's commit list and of the compare */
-    private int $pageSize = 100;
-    /** @var list<string> URL fragments of the requests answered with something other than JSON */
-    private array $broken = [];
     /** @var resource */
     private $out;
     /** @var resource */
@@ -150,8 +125,6 @@ class ReleaseCommandTest extends TestCase
 
     public function test_a_release_off_another_branch_is_tagged_at_the_prompt(): void
     {
-        $this->changelog = self::section('1.44.1');
-
         $status = $this->run_release("1.44.1\nn\nn\n", ['--branch' => '1.x']);
 
         $this->assertSame(0, $status);
@@ -204,6 +177,17 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame([], preg_grep('#/sem-conv/compare/#', array_column($this->requests, 'url')));
     }
 
+    public function test_force_tags_the_released_commit_of_an_unchanged_package(): void
+    {
+        $this->upstreamCommits = false;
+        $this->splitMessages = [];
+
+        $status = $this->run_release("1.45.0\nn\nn\n", ['--force' => true]);
+
+        $this->assertSame(0, $status);
+        $this->assertSame('sem-conv-released', $this->created()['target_commitish']);
+    }
+
     public function test_no_interaction_skips_and_names_a_package_without_a_new_dated_section(): void
     {
         $this->latestTag = '1.45.0';
@@ -243,12 +227,13 @@ class ReleaseCommandTest extends TestCase
         $this->assertStringContainsString('[DRY-RUN] https://api.github.com/repos/opentelemetry-php/sem-conv/releases', $this->output());
     }
 
-    public function test_there_is_no_force_option(): void
+    public function test_force_is_refused_without_interaction(): void
     {
-        $this->expectException(InvalidOptionException::class);
-        $this->expectExceptionMessage('"--force" option does not exist');
+        $status = $this->run_release('', ['--force' => true], false);
 
-        $this->run_release('', ['--force' => true]);
+        $this->assertSame(1, $status);
+        $this->assertSame([], $this->requests);
+        $this->assertStringContainsString('--force', $this->output());
     }
 
     public function test_failed_release_stops_the_run_without_interaction(): void
@@ -275,7 +260,7 @@ class ReleaseCommandTest extends TestCase
 
         $this->assertSame(1, $status);
         $this->assertSame(['opentelemetry-php/api' => '1.11.0'], $this->tags());
-        $this->assertStringContainsString('422 Validation Failed', $this->output());
+        $this->assertStringContainsString('(422)', $this->output());
     }
 
     public function test_release_targets_the_newest_split_commit_with_the_tree_of_the_sha(): void
@@ -297,7 +282,7 @@ class ReleaseCommandTest extends TestCase
         $status = $this->run_release('', [], false);
 
         $this->assertSame(0, $status);
-        $this->assertContains('https://api.github.com/repos/opentelemetry-php/sem-conv/compare/1.44.0...sem-conv-0?per_page=100', array_column($this->requests, 'url'));
+        $this->assertContains('https://api.github.com/repos/opentelemetry-php/sem-conv/compare/1.44.0...sem-conv-0', array_column($this->requests, 'url'));
     }
 
     public function test_split_history_is_walked_from_the_latest_release(): void
@@ -350,31 +335,20 @@ class ReleaseCommandTest extends TestCase
 
         $this->assertSame(0, $status);
         $urls = array_column($this->requests, 'url');
-        $this->assertSame([], preg_grep('#/opentelemetry-php/compare/#', $urls));
-        $this->assertCount(1, preg_grep('#/git/ref/#', $urls));
+        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/compare/main...abc123', $urls);
+        $this->assertSame([], preg_grep('#/git/matching-refs/#', $urls));
         $this->assertSame('1.45.0', $this->created()['tag_name']);
     }
 
     public function test_sha_not_on_the_branch_fails(): void
     {
-        $this->onBranch = false;
+        $this->shaStatus = 'diverged';
 
         $status = $this->run_release('', ['--sha' => 'abc123'], false);
 
         $this->assertSame(1, $status);
         $this->assertNull($this->post());
         $this->assertStringContainsString('abc123 is not on open-telemetry/opentelemetry-php main', $this->output());
-    }
-
-    public function test_sha_with_a_checkout_that_lacks_the_branch_tip_fails_naming_fetch(): void
-    {
-        $this->hasTip = false;
-
-        $status = $this->run_release('', ['--sha' => 'abc123'], false);
-
-        $this->assertSame(1, $status);
-        $this->assertNull($this->post());
-        $this->assertStringContainsString('does not have open-telemetry/opentelemetry-php main at abc123. Fetch it', $this->output());
     }
 
     public function test_checkout_not_at_sha_fails_before_calling_github(): void
@@ -386,32 +360,11 @@ class ReleaseCommandTest extends TestCase
         $this->assertStringContainsString('is at abc123, but --sha is def456', $this->output());
     }
 
-    public function test_upstream_commits_are_read_from_the_checkout_up_to_the_sha(): void
+    public function test_upstream_commits_are_listed_up_to_the_sha(): void
     {
         $this->run_release('', ['--sha' => 'abc123'], false);
 
-        $this->assertSame([['abc123', 'src/SemConv', '2026-01-01T00:00:01Z']], $this->logReads);
-        $this->assertSame([], preg_grep('#/commits\?path=#', array_column($this->requests, 'url')));
-    }
-
-    public function test_unreadable_upstream_commits_stop_the_run(): void
-    {
-        $this->logError = 'fatal: bad object abc123';
-
-        $status = $this->run_release('', [], false);
-
-        $this->assertSame(1, $status);
-        $this->assertNull($this->post());
-        $this->assertStringContainsString('src/SemConv of abc123 cannot be read by git: fatal: bad object abc123', $this->output());
-    }
-
-    public function test_upstream_commits_of_a_first_release_are_read_back_to_the_start(): void
-    {
-        $this->latestStatus = 404;
-
-        $this->run_release("1.0.0\n\n\n");
-
-        $this->assertSame([['abc123', 'src/SemConv', null]], $this->logReads);
+        $this->assertNotSame([], preg_grep('#/opentelemetry-php/commits\?path=src/SemConv&since=[^&]+&sha=abc123$#', array_column($this->requests, 'url')));
     }
 
     public function test_branch_that_moves_during_the_run_does_not_stop_it(): void
@@ -429,7 +382,7 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame(0, $status);
         $this->assertSame(['opentelemetry-php/api' => '1.11.0', 'opentelemetry-php/sdk' => '1.16.0'], $this->tags());
         $this->assertSame([['abc123', 'src/SDK'], ['abc123', 'src/API']], $this->treeReads);
-        $this->assertCount(1, preg_grep('#/git/ref/#', array_column($this->requests, 'url')));
+        $this->assertCount(1, preg_grep('#/git/matching-refs/#', array_column($this->requests, 'url')));
     }
 
     public function test_rerun_after_a_partial_run_tags_only_the_rest(): void
@@ -486,7 +439,7 @@ class ReleaseCommandTest extends TestCase
         $status = $this->run_release('', ['--repo' => null], false);
 
         $this->assertSame(0, $status);
-        $this->assertSame('https://api.github.com/repos/open-telemetry/opentelemetry-php-contrib/git/ref/heads/main', $this->requests[0]['url']);
+        $this->assertSame('https://api.github.com/repos/open-telemetry/opentelemetry-php-contrib/git/matching-refs/heads/main', $this->requests[0]['url']);
         $this->assertSame('1.45.0', $this->created()['tag_name']);
     }
 
@@ -508,20 +461,6 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame(1, $status);
         $this->assertSame([], $this->requests);
         $this->assertStringContainsString('not a checkout of open-telemetry/opentelemetry-php', $this->output());
-    }
-
-    public function test_without_repo_a_checkout_of_neither_monorepo_fails_naming_its_root(): void
-    {
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"acme/monorepo"}');
-
-        $status = $this->run_release('', ['--repo' => null], false);
-
-        $this->assertSame(1, $status);
-        $this->assertSame([], $this->requests);
-        $this->assertStringContainsString(
-            'is not a checkout of open-telemetry/opentelemetry-php or open-telemetry/opentelemetry-php-contrib: its composer.json is named "acme/monorepo"',
-            $this->output()
-        );
     }
 
     public function test_contrib_checkout_is_used_for_contrib(): void
@@ -556,48 +495,6 @@ class ReleaseCommandTest extends TestCase
         $this->assertStringContainsString(' M src/SemConv/composer.json', $this->output());
     }
 
-    public function test_untracked_file_under_a_prefix_fails_before_calling_github(): void
-    {
-        $this->untracked = ['?? src/SemConv/CHANGELOG.md'];
-
-        $status = $this->run_release('', [], false);
-
-        $this->assertSame(1, $status);
-        $this->assertSame([], $this->requests);
-        $this->assertStringContainsString('?? src/SemConv/CHANGELOG.md', $this->output());
-    }
-
-    public function test_untracked_files_are_looked_for_under_every_prefix(): void
-    {
-        $this->api_and_sdk();
-
-        $this->run_release('', ['--filter' => 'src/SDK'], false);
-
-        $this->assertSame([['src/SDK', 'src/API']], $this->untrackedPrefixes);
-    }
-
-    public function test_dry_run_warns_about_an_untracked_file_under_a_prefix(): void
-    {
-        $this->untracked = ['?? src/SemConv/CHANGELOG.md'];
-
-        $status = $this->run_release('', ['--dry-run' => true], false);
-
-        $this->assertSame(0, $status);
-        $this->assertStringContainsString('[DRY-RUN]', $this->output());
-        $this->assertStringContainsString('?? src/SemConv/CHANGELOG.md', $this->output());
-    }
-
-    public function test_shallow_checkout_fails_before_calling_github(): void
-    {
-        $this->shallow = true;
-
-        $status = $this->run_release('', ['--dry-run' => true], false);
-
-        $this->assertSame(1, $status);
-        $this->assertSame([], $this->requests);
-        $this->assertStringContainsString('fetch-depth: 0', $this->output());
-    }
-
     public function test_checkout_not_at_the_branch_tip_fails(): void
     {
         $this->head = 'old456';
@@ -606,7 +503,7 @@ class ReleaseCommandTest extends TestCase
 
         $this->assertSame(1, $status);
         $this->assertCount(1, $this->requests);
-        $this->assertStringContainsString('/repos/open-telemetry/opentelemetry-php/git/ref/heads/main', $this->requests[0]['url']);
+        $this->assertStringContainsString('/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/main', $this->requests[0]['url']);
         $this->assertStringContainsString('old456', $this->output());
         $this->assertStringContainsString('abc123', $this->output());
     }
@@ -635,13 +532,54 @@ class ReleaseCommandTest extends TestCase
         $this->assertStringContainsString('[DRY-RUN]', $this->output());
     }
 
-    public function test_split_changelog_is_not_read_from_github(): void
+    public function test_release_stops_when_the_split_lacks_the_changelog_section(): void
     {
-        //the split commit has the tree of the prefix, CHANGELOG.md and all
-        $status = $this->run_release('', [], false);
+        $this->splitChangelogs = ['sem-conv' => self::section('1.44.0')];
+
+        $status = $this->run_release("\n\n\n");
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('opentelemetry-php/sem-conv main has no 1.45.0 section in CHANGELOG.md yet', $this->output());
+    }
+
+    public function test_release_stops_when_the_split_has_no_changelog(): void
+    {
+        $this->splitChangelogs = ['sem-conv' => null];
+
+        $status = $this->run_release("\n\n\n");
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('has no 1.45.0 section in CHANGELOG.md yet', $this->output());
+    }
+
+    public function test_split_changelog_is_read_through_the_api_at_the_split_commit(): void
+    {
+        $this->run_release("\n\n\n");
+
+        $urls = array_column($this->requests, 'url');
+        $this->assertContains('https://api.github.com/repos/opentelemetry-php/sem-conv/contents/CHANGELOG.md?ref=sem-conv-0', $urls);
+    }
+
+    public function test_dry_run_warns_when_the_split_lacks_the_changelog_section(): void
+    {
+        $this->splitChangelogs = ['sem-conv' => self::section('1.44.0')];
+
+        $status = $this->run_release("\n\n\n", ['--dry-run' => true]);
 
         $this->assertSame(0, $status);
-        $this->assertSame([], preg_grep('#/contents/#', array_column($this->requests, 'url')));
+        $this->assertStringContainsString('has no 1.45.0 section in CHANGELOG.md yet', $this->output());
+        $this->assertStringContainsString('[DRY-RUN] https://api.github.com/repos/opentelemetry-php/sem-conv/releases', $this->output());
+    }
+
+    public function test_split_is_not_checked_for_a_version_the_changelog_does_not_have(): void
+    {
+        $this->splitChangelogs = ['sem-conv' => self::section('1.44.0')];
+
+        $this->run_release("1.46.0\n\n\n");
+
+        $this->assertSame('1.46.0', $this->created()['tag_name']);
     }
 
     public function test_path_that_is_not_a_monorepo_fails_before_calling_github(): void
@@ -652,26 +590,6 @@ class ReleaseCommandTest extends TestCase
 
         $this->assertSame([], $this->requests);
         $this->assertStringContainsString('not a monorepo checkout', $this->output());
-    }
-
-    public function test_split_without_a_target_fails_before_calling_github(): void
-    {
-        $this->gitsplit = "splits:\n  - prefix: \"src/SemConv\"\n";
-
-        $status = $this->run_release('');
-
-        $this->assertSame(1, $status);
-        $this->assertSame([], $this->requests);
-        $this->assertStringContainsString('.gitsplit.yml split 1 has no target', $this->output());
-    }
-
-    public function test_path_that_does_not_exist_fails_naming_it(): void
-    {
-        $status = $this->run_release('', ['--path' => '/nowhere/monorepo']);
-
-        $this->assertSame(1, $status);
-        $this->assertSame([], $this->requests);
-        $this->assertStringContainsString('--path /nowhere/monorepo is not a directory', $this->output());
     }
 
     public function test_unreadable_package_dependencies_fail_before_calling_github(): void
@@ -736,117 +654,23 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame('1.45.0', $this->created()['tag_name']);
     }
 
-    public function test_no_pull_requests_are_looked_up(): void
+    public function test_pull_requests_are_listed_when_the_changelog_has_no_section_for_the_version(): void
     {
-        $this->run_release("\n\n\n");
+        $this->run_release("1.46.0\n\n\n");
 
-        $this->assertSame([], preg_grep('#/pulls#', array_column($this->requests, 'url')));
+        $this->assertSame('1.46.0', $this->created()['tag_name']);
+        $this->assertStringContainsString("What's Changed", $this->created()['body']);
+        $this->assertStringContainsString('Add attributes by @octocat', $this->created()['body']);
+        $this->assertStringContainsString('no section for 1.46.0', $this->output());
     }
 
-    public function test_unreleased_commits_are_listed_by_subject_and_author(): void
-    {
-        $this->log = [['sha' => 'abc', 'author' => 'Octo Cat', 'message' => "Add attributes (#7)\n\nWith a body."]];
-        $this->splitMessages = ["Add attributes (#7)\n\nWith a body."];
-
-        $this->run_release("\n\n\n");
-
-        $this->assertStringContainsString('* Add attributes (#7) (Octo Cat)', $this->output());
-        $this->assertStringNotContainsString('With a body.', $this->output());
-    }
-
-    public function test_commit_without_a_pull_request_is_released(): void
-    {
-        //an advisory is merged from a private fork, with no pull request in the repository
-        $this->log = [['sha' => 'def', 'author' => 'Octo Cat', 'message' => 'Merge commit from fork']];
-        $this->splitMessages = ['Merge commit from fork'];
-
-        $status = $this->run_release('', [], false);
-
-        $this->assertSame(0, $status);
-        $this->assertSame('1.45.0', $this->created()['tag_name']);
-        $this->assertStringContainsString('* Merge commit from fork (Octo Cat)', $this->output());
-    }
-
-    public function test_version_without_a_changelog_section_stops_the_run(): void
-    {
-        $status = $this->run_release("1.46.0\n\n\n");
-
-        $this->assertSame(1, $status);
-        $this->assertNull($this->post());
-        $this->assertStringContainsString('CHANGELOG.md has no section for 1.46.0', $this->output());
-    }
-
-    public function test_dry_run_warns_about_a_version_without_a_changelog_section(): void
-    {
-        $status = $this->run_release("1.46.0\n\n\n", ['--dry-run' => true]);
-
-        $this->assertSame(0, $status);
-        $this->assertStringContainsString('[DRY-RUN] opentelemetry-php/sem-conv CHANGELOG.md has no section for 1.46.0', $this->output());
-    }
-
-    public function test_package_without_a_changelog_stops_the_run_before_tagging(): void
+    public function test_pull_requests_are_listed_when_the_package_has_no_changelog(): void
     {
         $this->changelog = null;
 
-        $status = $this->run_release("1.45.0\n\n\n");
+        $this->run_release("1.45.0\n\n\n");
 
-        $this->assertSame(1, $status);
-        $this->assertNull($this->post());
-        $this->assertStringContainsString('src/SemConv has no CHANGELOG.md', $this->output());
-    }
-
-    public function test_package_without_a_changelog_stops_the_run_without_interaction(): void
-    {
-        $this->changelog = null;
-
-        $status = $this->run_release('', [], false);
-
-        $this->assertSame(1, $status);
-        $this->assertNull($this->post());
-        $this->assertStringContainsString('src/SemConv has no CHANGELOG.md', $this->output());
-    }
-
-    public function test_dry_run_warns_about_a_package_without_a_changelog(): void
-    {
-        $this->changelog = null;
-
-        $status = $this->run_release("1.45.0\n\n\n", ['--dry-run' => true]);
-
-        $this->assertSame(0, $status);
-        $this->assertStringContainsString('[DRY-RUN] opentelemetry-php/sem-conv has unreleased changes, but src/SemConv has no CHANGELOG.md', $this->output());
-    }
-
-    public function test_changelog_with_an_unclosed_code_block_stops_the_run_naming_its_line(): void
-    {
-        $this->changelog = "# Changelog\n\n## 1.46.0 - 2026-11-04\n\n- A new option:\n  ```yaml\n\n" . self::CHANGELOG;
-
-        $status = $this->run_release('', [], false);
-
-        $this->assertSame(1, $status);
-        $this->assertNull($this->post());
-        $this->assertStringContainsString('src/SemConv/CHANGELOG.md: line 6: code block is not closed', $this->output());
-    }
-
-    public function test_package_without_changes_may_have_a_malformed_changelog(): void
-    {
-        $this->changelog = "# Changelog\n\n```\n";
-        $this->upstreamCommits = false;
-
-        $status = $this->run_release('', [], false);
-
-        $this->assertSame(0, $status);
-        $this->assertStringNotContainsString('CHANGELOG.md', $this->output());
-    }
-
-    public function test_package_without_changes_does_not_need_a_changelog(): void
-    {
-        $this->changelog = null;
-        $this->upstreamCommits = false;
-
-        $status = $this->run_release('', [], false);
-
-        $this->assertSame(0, $status);
-        $this->assertStringNotContainsString('CHANGELOG.md', $this->output());
+        $this->assertStringContainsString("What's Changed", $this->created()['body']);
     }
 
     public function test_blank_answer_skips_when_the_changelog_is_not_newer_than_the_latest_release(): void
@@ -949,7 +773,7 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame(1, $status);
         $this->assertFalse($this->json()['completed']);
         $this->assertSame(['opentelemetry-php/api'], array_column($this->json()['releases'], 'repository'));
-        $this->assertStringContainsString('422 Validation Failed', $this->errors());
+        $this->assertStringContainsString('(422)', $this->errors());
     }
 
     public function test_json_format_sends_errors_to_stderr(): void
@@ -1010,103 +834,7 @@ class ReleaseCommandTest extends TestCase
 
         $this->assertSame(1, $status);
         $this->assertFalse($this->json()['completed']);
-        $this->assertStringContainsString('releases/latest: 500 Server Error', $this->errors());
-    }
-
-    public function test_json_format_is_printed_when_the_run_crashes(): void
-    {
-        $this->logCrash = new \TypeError('Cannot assign null to property');
-
-        $status = $this->run_release('', ['--format' => 'json'], false);
-
-        $this->assertSame(1, $status);
-        $this->assertFalse($this->json()['completed']);
-        $this->assertStringContainsString('Cannot assign null to property', $this->errors());
-    }
-
-    public function test_split_commit_on_a_later_page_is_found(): void
-    {
-        $this->splitMessages = ['Add attributes', 'Merged after the release', 'Also merged after'];
-        $this->splitMatch = 0;
-        $this->pageSize = 1;
-
-        $status = $this->run_release('', [], false);
-
-        $this->assertSame(0, $status);
-        $this->assertSame('sem-conv-0', $this->created()['target_commitish']);
-    }
-
-    public function test_every_page_of_the_compare_is_checked(): void
-    {
-        $this->splitMessages = ['Add attributes', 'Pushed straight to the split'];
-        $this->pageSize = 1;
-
-        $status = $this->run_release('', [], false);
-
-        $this->assertSame(1, $status);
-        $this->assertNull($this->post());
-        $this->assertStringContainsString('Pushed straight to the split', $this->output());
-    }
-
-    public function test_failed_split_commit_list_stops_the_run(): void
-    {
-        $this->splitStatus = 403;
-
-        $status = $this->run_release('', [], false);
-
-        $this->assertSame(1, $status);
-        $this->assertNull($this->post());
-        $this->assertStringContainsString('403 API rate limit exceeded', $this->output());
-    }
-
-    public function test_json_format_is_printed_when_the_split_commit_list_fails(): void
-    {
-        $this->splitStatus = 403;
-
-        $status = $this->run_release('', ['--format' => 'json'], false);
-
-        $this->assertSame(1, $status);
-        $this->assertFalse($this->json()['completed']);
-        $this->assertStringContainsString('403 API rate limit exceeded', $this->errors());
-    }
-
-    /**
-     * @dataProvider endpoints
-     */
-    public function test_bad_json_stops_the_run_naming_the_url(string $fragment): void
-    {
-        $this->broken = [$fragment];
-
-        $status = $this->run_release('', ['--format' => 'json'], false);
-
-        $this->assertSame(1, $status);
-        $this->assertNull($this->post());
-        $this->assertFalse($this->json()['completed']);
-        $this->assertMatchesRegularExpression('#https://api\.github\.com/repos/\S*' . preg_quote($fragment, '#') . '#', $this->errors());
-    }
-
-    /**
-     * @return array<string, array{string}>
-     */
-    public static function endpoints(): array
-    {
-        return [
-            'branch' => ['/git/ref'],
-            'latest release' => ['/releases/latest'],
-            'split commits' => ['/commits?sha='],
-            'compare' => ['/compare/'],
-        ];
-    }
-
-    public function test_branch_is_looked_up_by_its_exact_name(): void
-    {
-        $this->branches = ['main', '1.x-old'];
-
-        $status = $this->run_release("1.44.1\nn\nn\n", ['--branch' => '1.x']);
-
-        $this->assertSame(1, $status);
-        $this->assertNull($this->post());
-        $this->assertStringContainsString('git/ref/heads/1.x: 404', $this->output());
+        $this->assertStringContainsString('Error retrieving latest release', $this->errors());
     }
 
     public function test_unknown_format_fails_before_calling_github(): void
@@ -1193,7 +921,7 @@ class ReleaseCommandTest extends TestCase
             is_dir($dir) || mkdir($dir, 0o777, true);
             $changelog === null || file_put_contents("{$dir}/CHANGELOG.md", $changelog);
         }
-        file_put_contents($gitsplit, $this->gitsplit ?? $yaml);
+        file_put_contents($gitsplit, $yaml);
     }
 
     private function output(): string
@@ -1297,28 +1025,6 @@ class ReleaseCommandTest extends TestCase
         $git->method('head')->willReturnCallback(fn (): string => $this->head
             ?? throw new RuntimeException('fatal: not a git repository (or any of the parent directories): .git'));
         $git->method('changes')->willReturnCallback(fn (): array => $this->changes);
-        $git->method('untracked')->willReturnCallback(function (string $path, array $prefixes): array {
-            $this->untrackedPrefixes[] = $prefixes;
-
-            return $this->untracked;
-        });
-        $git->method('isShallow')->willReturnCallback(fn (): bool => $this->shallow);
-        $git->method('hasCommit')->willReturnCallback(fn (): bool => $this->hasTip);
-        $git->method('isAncestor')->willReturnCallback(fn (): bool => $this->onBranch);
-        $git->method('log')->willReturnCallback(function (string $path, string $sha, string $prefix, ?string $since): array {
-            $this->logReads[] = [$sha, $prefix, $since];
-            if ($this->head === null) {
-                throw new RuntimeException('fatal: not a git repository (or any of the parent directories): .git');
-            }
-            if ($this->logError !== null) {
-                throw new RuntimeException($this->logError);
-            }
-            if ($this->logCrash !== null) {
-                throw $this->logCrash;
-            }
-
-            return $this->upstreamCommits ? $this->log : [];
-        });
         $git->method('tree')->willReturnCallback(function (string $path, string $sha, string $prefix): string {
             $this->treeReads[] = [$sha, $prefix];
 
@@ -1327,7 +1033,7 @@ class ReleaseCommandTest extends TestCase
                 : "tree-{$prefix}";
         });
 
-        return new ReleaseCommand(new GitHub($client), $reader, $git);
+        return new ReleaseCommand($client, $reader, $git);
     }
 
     private function respond(string $method, string $url): Response
@@ -1344,35 +1050,27 @@ class ReleaseCommandTest extends TestCase
                 ? $json(['html_url' => 'https://github.com/x/y/releases/1'], 201)
                 : $json(['message' => 'Validation Failed'], $status);
         }
-        foreach ($this->broken as $fragment) {
-            if (str_contains($url, $fragment)) {
-                return new Response(200, [], '<html>');
-            }
-        }
-        //matches by prefix, so a command that asks it for 1.x is answered with 1.x-old
         if (preg_match('#/git/matching-refs/heads/(.+)$#', $url, $m) === 1) {
-            return $json(array_values(array_map(
-                fn (string $branch): array => ['ref' => "refs/heads/{$branch}", 'object' => ['sha' => $this->tip()]],
-                array_filter($this->branches, static fn (string $branch): bool => str_starts_with($branch, $m[1])),
-            )));
+            $tip = count($this->tips) > 1 ? array_shift($this->tips) : $this->tips[0];
+
+            return $json([['ref' => "refs/heads/{$m[1]}", 'object' => ['sha' => $tip]]]);
         }
-        if (preg_match('#/git/ref/heads/(.+)$#', $url, $m) === 1) {
-            return in_array($m[1], $this->branches, true)
-                ? $json(['ref' => "refs/heads/{$m[1]}", 'object' => ['sha' => $this->tip()]])
-                : $json(['message' => 'Not Found'], 404);
+        if (preg_match('#/open-telemetry/opentelemetry-php(-contrib)?/compare/#', $url) === 1) {
+            return $json(['status' => $this->shaStatus]);
         }
         $match = $this->splitMatch ?? count($this->splitMessages) - 1;
-        foreach ($this->splits() as $project => [$prefix, $latest]) {
-            $commit = static fn (string $message): array => ['sha' => 'abc', 'commit' => ['message' => $message, 'tree' => ['sha' => 'any']]];
+        foreach ($this->splits() as $project => [$prefix, $latest, $changelog]) {
+            $split = array_key_exists($project, $this->splitChangelogs) ? $this->splitChangelogs[$project] : $changelog;
             $response = match (true) {
-                str_ends_with($url, "/repos/opentelemetry-php/{$project}") => $json(['full_name' => "opentelemetry-php/{$project}"]),
+                str_contains($url, "/{$project}/contents/CHANGELOG.md?ref=") => $split === null
+                    ? new Response(404)
+                    : $json(['encoding' => 'base64', 'content' => chunk_split(base64_encode($split), 60, "\n")]),
                 str_contains($url, "/{$project}/releases/latest") => $this->latestStatus !== 200
                     ? $json(['message' => 'Server Error'], $this->latestStatus)
                     : $json(['tag_name' => $latest, 'created_at' => '2026-01-01T00:00:00Z']),
-                str_contains($url, "/{$project}/commits?sha=") && $this->splitStatus !== 200 => $json(['message' => 'API rate limit exceeded'], $this->splitStatus),
                 //without since, the walk reaches the released commit, whose tree is the checkout's
                 //when nothing has changed since
-                str_contains($url, "/{$project}/commits?sha=") => $this->page($url, null, array_merge(array_reverse(array_map(
+                str_contains($url, "/{$project}/commits?sha=") => $json(array_merge(array_reverse(array_map(
                     fn (string $message, int $i): array => [
                         'sha' => "{$project}-{$i}",
                         'commit' => ['message' => $message, 'tree' => ['sha' => $this->splitPushed && $i === $match ? "tree-{$prefix}" : "other-{$i}"]],
@@ -1383,11 +1081,14 @@ class ReleaseCommandTest extends TestCase
                     ['sha' => "{$project}-released", 'commit' => ['message' => 'Released', 'tree' => ['sha' => $this->upstreamCommits ? 'released' : "tree-{$prefix}"]]],
                 ])),
                 str_contains($url, "/{$project}/compare/") && $this->compareStatus !== 200 => $json(['message' => 'Server Error'], $this->compareStatus),
-                preg_match("#/{$project}/compare/[^/?]+\\.\\.\\.{$project}-(\\d+)(\\?|$)#", $url, $m) === 1 => $this->page($url, 'commits', array_map(
-                    $commit,
+                preg_match("#/{$project}/compare/[^/]+\\.\\.\\.{$project}-(\\d+)$#", $url, $m) === 1 => $json(['commits' => array_map(
+                    static fn (string $message): array => ['sha' => 'abc', 'commit' => ['message' => $message]],
                     array_slice($this->splitMessages, 0, (int) $m[1] + 1)
-                )),
-                str_contains($url, "/{$project}/compare/") => $this->page($url, 'commits', array_map($commit, $this->splitMessages)),
+                )]),
+                str_contains($url, "/{$project}/compare/") => $json(['commits' => array_map(
+                    static fn (string $message): array => ['sha' => 'abc', 'commit' => ['message' => $message]],
+                    $this->splitMessages
+                )]),
                 default => null,
             };
             if ($response !== null) {
@@ -1395,30 +1096,10 @@ class ReleaseCommandTest extends TestCase
             }
         }
 
-        return new Response(404);
-    }
-
-    private function tip(): string
-    {
-        return count($this->tips) > 1 ? array_shift($this->tips) : $this->tips[0];
-    }
-
-    /**
-     * One page of $items, as GitHub pages them: `page` in the query, and a Link to the next.
-     *
-     * @param ?string $key the field holding the list, or null when the response is the list
-     * @param list<mixed> $items
-     */
-    private function page(string $url, ?string $key, array $items): Response
-    {
-        $page = preg_match('/[?&]page=(\d+)/', $url, $m) === 1 ? (int) $m[1] : 1;
-        $slice = array_slice($items, ($page - 1) * $this->pageSize, $this->pageSize);
-        $headers = [];
-        if (count($items) > $page * $this->pageSize) {
-            $next = preg_replace('/&page=\d+/', '', $url) . '&page=' . ($page + 1);
-            $headers['Link'] = "<{$next}>; rel=\"next\"";
-        }
-
-        return new Response(200, $headers, json_encode($key === null ? $slice : [$key => $slice]));
+        return match (true) {
+            str_contains($url, '/commits/abc/pulls') => $json([['user' => ['login' => 'octocat'], 'html_url' => 'https://github.com/o/r/pull/7', 'number' => 7, 'title' => 'Add attributes']]),
+            str_contains($url, '/commits?path=') => $json($this->upstreamCommits ? [['sha' => 'abc', 'commit' => ['message' => 'Add attributes']]] : []),
+            default => new Response(404),
+        };
     }
 }

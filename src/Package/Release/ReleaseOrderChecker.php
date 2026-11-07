@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Package\Release;
 
+use Composer\Semver\Constraint\Constraint;
 use Composer\Semver\Constraint\ConstraintInterface;
 use Composer\Semver\VersionParser;
-use OpenTelemetry\DevTools\Package\Composer\VersionMatcher;
 use UnexpectedValueException;
 
 /**
@@ -51,12 +51,12 @@ final class ReleaseOrderChecker
                 if ($dependency === null || $new === null || $parsed === null) {
                     continue;
                 }
-                if (!VersionMatcher::matches($parsed, $new)) {
+                if (!$this->matches($parsed, $new)) {
                     $warnings[] = sprintf('%s %s %s %s, which excludes %s', $package->name, $verb, $name, $constraint, $new);
 
                     continue;
                 }
-                if ($name !== $package->name && isset($released[$package->name]) && !VersionMatcher::matches($parsed, $dependency->latest)) {
+                if ($name !== $package->name && isset($released[$package->name]) && !$this->matches($parsed, $dependency->latest)) {
                     $after[$package->name][$name] = true;
                 }
             }
@@ -64,18 +64,18 @@ final class ReleaseOrderChecker
                 $dependency = $released[$name] ?? null;
                 $parsed = $dependency === null ? null : $this->constraint($constraint);
                 $new = $dependency?->version;
-                if ($new !== null && $parsed !== null && VersionMatcher::matches($parsed, $new)) {
+                if ($new !== null && $parsed !== null && $this->matches($parsed, $new)) {
                     $warnings[] = sprintf('%s conflicts with %s %s, which matches %s', $package->name, $name, $constraint, $new);
                 }
             }
         }
 
-        [$order, $stuck] = $this->sort($after, array_keys($released));
-        if ($stuck !== []) {
-            $warnings[] = sprintf('circular dependency between %s, no safe tag order', implode(', ', $this->cycle($after, $stuck)));
+        [$order, $cycle] = $this->sort($after, array_keys($released));
+        if ($cycle !== []) {
+            $warnings[] = sprintf('circular dependency between %s, no safe tag order', implode(', ', $cycle));
         }
 
-        return new ReleaseOrderReport([...$order, ...$stuck], $warnings);
+        return new ReleaseOrderReport([...$order, ...$cycle], $warnings);
     }
 
     /**
@@ -109,10 +109,23 @@ final class ReleaseOrderChecker
         }
     }
 
+    private function matches(ConstraintInterface $constraint, ?string $version): bool
+    {
+        if ($version === null) {
+            return false;
+        }
+
+        try {
+            return $constraint->matches(new Constraint('==', $this->parser->normalize($version)));
+        } catch (UnexpectedValueException) {
+            return false;
+        }
+    }
+
     /**
      * @param array<string, array<string, true>> $after packages each package has to be tagged after
      * @param list<string> $names
-     * @return array{0: list<string>, 1: list<string>} packages in tag order, and those stuck behind a cycle
+     * @return array{0: list<string>, 1: list<string>} packages in tag order, and those stuck in a cycle
      */
     private function sort(array $after, array $names): array
     {
@@ -139,32 +152,5 @@ final class ReleaseOrderChecker
         }
 
         return [$order, []];
-    }
-
-    /**
-     * The packages in $stuck that wait on themselves. The rest only wait on one of them.
-     *
-     * @param array<string, array<string, true>> $after
-     * @param list<string> $stuck
-     * @return list<string>
-     */
-    private function cycle(array $after, array $stuck): array
-    {
-        return array_values(array_filter($stuck, static function (string $name) use ($after): bool {
-            $seen = [];
-            $next = array_keys($after[$name] ?? []);
-            while ($next !== []) {
-                $current = array_pop($next);
-                if ($current === $name) {
-                    return true;
-                }
-                if (!isset($seen[$current])) {
-                    $seen[$current] = true;
-                    array_push($next, ...array_keys($after[$current] ?? []));
-                }
-            }
-
-            return false;
-        }));
     }
 }

@@ -1,0 +1,15 @@
+{
+  "name": "test/c",
+  "description": "test",
+  "type": "library",
+  "license": "Apache-2.0",
+  "autoload": {
+    "psr-4": {
+      "Test\\C\\": "."
+    }
+  },
+  "require": {
+    "test/a": "1.0.0",
+    "test/b": "1.0.0"
+  }
+}

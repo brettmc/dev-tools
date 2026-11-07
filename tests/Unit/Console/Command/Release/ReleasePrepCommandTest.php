@@ -6,7 +6,6 @@ namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Release;
 
 use Nyholm\Psr7\Response;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrepCommand;
-use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
@@ -35,7 +34,7 @@ class ReleasePrepCommandTest extends TestCase
     /** @var array<string, string> latest tag by downstream project, eg api => 1.10.1 */
     private array $releases = [];
     private ProviderDependencies $dependencies;
-    private RuntimeException|\Error|null $readError = null;
+    private ?RuntimeException $readError = null;
     private CommandTester $tester;
     /** @var list<string> URLs requested */
     private array $requests = [];
@@ -206,28 +205,6 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('no CHANGELOG.md', $this->tester->getDisplay());
     }
 
-    public function test_relative_path_reports_a_package_without_a_changelog(): void
-    {
-        $this->monorepo(['src/API' => ['api', null]]);
-        $base = sys_get_temp_dir() . '/release-prep-' . bin2hex(random_bytes(4));
-        mkdir("{$base}/monorepo/src/API", 0o777, true);
-        copy($this->root->url() . '/.gitsplit.yml', "{$base}/monorepo/.gitsplit.yml");
-        copy($this->root->url() . '/composer.json', "{$base}/monorepo/composer.json");
-        $cwd = (string) getcwd();
-        chdir($base);
-
-        try {
-            $status = $this->prep(['--path' => 'monorepo'], ['interactive' => false]);
-        } finally {
-            chdir($cwd);
-            exec('rm -rf ' . escapeshellarg($base));
-        }
-
-        $this->assertStringNotContainsString('resolves outside', $this->tester->getDisplay());
-        $this->assertStringContainsString('no CHANGELOG.md', $this->tester->getDisplay());
-        $this->assertSame(Command::SUCCESS, $status);
-    }
-
     public function test_package_with_nothing_unreleased_is_not_released(): void
     {
         $this->monorepo(['src/API' => ['api', self::EMPTY]]);
@@ -293,63 +270,6 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('## 1.0.0 - 2026-11-03', $this->changelog('src/API'));
     }
 
-    public function test_undecided_packages_are_listed_after_the_table(): void
-    {
-        $this->releases = ['api' => '1.0.0RC1', 'sdk' => '1.15.0'];
-        $this->monorepo(['src/API' => ['api', self::ADDED], 'src/SDK' => ['sdk', self::FIXED]]);
-
-        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
-        $this->assertStringContainsString(
-            "\nNo version suggested, choose one with --set=<package>=<version>:\n- opentelemetry-php/api\n",
-            $this->tester->getDisplay()
-        );
-        $this->assertStringNotContainsString('- opentelemetry-php/sdk', $this->tester->getDisplay());
-    }
-
-    public function test_undecided_packages_are_listed_in_markdown(): void
-    {
-        $this->releases = ['api' => '1.0.0RC1'];
-        $this->monorepo(['src/API' => ['api', self::ADDED]]);
-
-        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'markdown']));
-        $this->assertStringContainsString(
-            "\n**No version suggested**, choose one with `--set=<package>=<version>`:\n- opentelemetry-php/api\n",
-            $this->tester->getDisplay()
-        );
-    }
-
-    public function test_no_undecided_list_when_every_package_has_a_suggestion(): void
-    {
-        $this->monorepo(['src/API' => ['api', self::ADDED]]);
-
-        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
-        $this->assertStringNotContainsString('No version suggested', $this->tester->getDisplay());
-    }
-
-    public function test_json_format_marks_a_package_undecided(): void
-    {
-        $this->releases = ['api' => '1.0.0RC1', 'sdk' => '1.15.0'];
-        $this->monorepo(['src/API' => ['api', self::ADDED], 'src/SDK' => ['sdk', self::FIXED]]);
-
-        $this->assertSame(Command::SUCCESS, $this->prep(['--format' => 'json'], ['interactive' => false, 'capture_stderr_separately' => true]));
-
-        $json = json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR);
-        $this->assertSame([true, false], array_column($json['packages'], 'undecided'));
-        $this->assertSame([null, '1.15.1'], array_column($json['packages'], 'version'));
-    }
-
-    public function test_json_format_package_chosen_at_the_prompt_is_not_undecided(): void
-    {
-        $this->releases = ['api' => '1.0.0RC1'];
-        $this->monorepo(['src/API' => ['api', self::ADDED]]);
-
-        $this->assertSame(Command::SUCCESS, $this->prep(['--format' => 'json'], ['inputs' => ['1.0.0'], 'capture_stderr_separately' => true]));
-
-        $json = json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR);
-        $this->assertSame([false], array_column($json['packages'], 'undecided'));
-        $this->assertSame(['1.0.0'], array_column($json['packages'], 'version'));
-    }
-
     public function test_package_with_no_release_is_skipped(): void
     {
         $this->releases = [];
@@ -391,22 +311,6 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('is not a monorepo checkout', $this->tester->getDisplay());
     }
 
-    public function test_split_without_a_target_fails_naming_it(): void
-    {
-        $this->monorepo([]);
-        file_put_contents($this->root->url() . '/.gitsplit.yml', "splits:\n  - prefix: \"src/API\"\n");
-
-        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
-        $this->assertSame([], $this->requests);
-        $this->assertStringContainsString('.gitsplit.yml split 1 has no target', $this->tester->getDisplay());
-    }
-
-    public function test_path_that_does_not_exist_fails_naming_it(): void
-    {
-        $this->assertSame(Command::FAILURE, $this->prep(['--path' => '/nowhere/monorepo'], ['interactive' => false]));
-        $this->assertStringContainsString('--path /nowhere/monorepo is not a directory', $this->tester->getDisplay());
-    }
-
     public function test_markdown_format_prints_a_table_for_a_pull_request_body(): void
     {
         $this->monorepo(['src/API' => ['api', self::BREAKING]]);
@@ -429,9 +333,9 @@ class ReleasePrepCommandTest extends TestCase
 
         $this->assertSame([
             'packages' => [
-                ['package' => 'open-telemetry/api', 'repository' => 'opentelemetry-php/api', 'latest' => '1.10.1', 'version' => '1.11.0', 'reason' => 'new features', 'warnings' => [], 'undecided' => false],
-                ['package' => 'open-telemetry/sdk', 'repository' => 'opentelemetry-php/sdk', 'latest' => '1.15.0', 'version' => '1.16.0', 'reason' => 'breaking changes recorded', 'warnings' => ['Dropped X.'], 'undecided' => false],
-                ['package' => 'open-telemetry/context', 'repository' => 'opentelemetry-php/context', 'latest' => '1.4.0', 'version' => null, 'reason' => 'no unreleased changes', 'warnings' => [], 'undecided' => false],
+                ['package' => 'open-telemetry/api', 'repository' => 'opentelemetry-php/api', 'latest' => '1.10.1', 'version' => '1.11.0', 'reason' => 'new features', 'warnings' => []],
+                ['package' => 'open-telemetry/sdk', 'repository' => 'opentelemetry-php/sdk', 'latest' => '1.15.0', 'version' => '1.16.0', 'reason' => 'breaking changes recorded', 'warnings' => ['Dropped X.']],
+                ['package' => 'open-telemetry/context', 'repository' => 'opentelemetry-php/context', 'latest' => '1.4.0', 'version' => null, 'reason' => 'no unreleased changes', 'warnings' => []],
             ],
             'order' => ['open-telemetry/api', 'open-telemetry/sdk'],
             'constraint_warnings' => [],
@@ -503,17 +407,6 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('Housekeeping', $this->tester->getErrorOutput());
     }
 
-    public function test_json_format_is_printed_when_the_prep_crashes(): void
-    {
-        $this->monorepo(['src/API' => ['api', self::FIXED]]);
-        $this->readError = new \TypeError('Cannot assign null to property');
-
-        $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'json'], ['interactive' => false, 'capture_stderr_separately' => true]));
-
-        $this->assertFalse(json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR)['completed']);
-        $this->assertStringContainsString('Cannot assign null to property', $this->tester->getErrorOutput());
-    }
-
     public function test_json_format_is_printed_when_a_lookup_throws(): void
     {
         $this->monorepo(['src/API' => ['api', self::FIXED]]);
@@ -522,7 +415,7 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'json'], ['interactive' => false, 'capture_stderr_separately' => true]));
 
         $this->assertFalse(json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR)['completed']);
-        $this->assertStringContainsString('releases/latest: 500', $this->tester->getErrorOutput());
+        $this->assertStringContainsString('Error retrieving latest release', $this->tester->getErrorOutput());
     }
 
     public function test_unknown_format_fails(): void
@@ -678,22 +571,9 @@ class ReleasePrepCommandTest extends TestCase
         $this->monorepo(['src/API' => ['api', self::FIXED]]);
 
         $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
-        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/ref/heads/main', $this->requests);
+        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/main', $this->requests);
         $this->assertSame([[$this->root->url(), 'abc123', 'HEAD']], $this->ancestorChecks);
         $this->assertStringContainsString('## 1.10.2 - 2026-11-03', $this->changelog('src/API'));
-    }
-
-    public function test_checkout_of_neither_monorepo_fails_naming_its_root(): void
-    {
-        $this->monorepo(['src/API' => ['api', self::FIXED]]);
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"acme/monorepo"}');
-
-        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
-        $this->assertStringContainsString(
-            'is not a checkout of open-telemetry/opentelemetry-php or open-telemetry/opentelemetry-php-contrib: its composer.json is named "acme/monorepo"',
-            $this->tester->getDisplay()
-        );
-        $this->assertSame(self::FIXED, $this->changelog('src/API'));
     }
 
     public function test_checkout_without_the_branch_tip_fails_and_says_to_fetch(): void
@@ -750,8 +630,8 @@ class ReleasePrepCommandTest extends TestCase
         $this->monorepo(['src/API' => ['api', self::FIXED]]);
 
         $this->assertSame(Command::SUCCESS, $this->prep(['--branch' => '1.x'], ['interactive' => false]));
-        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/ref/heads/1.x', $this->requests);
-        $this->assertNotContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/ref/heads/main', $this->requests);
+        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/1.x', $this->requests);
+        $this->assertNotContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/matching-refs/heads/main', $this->requests);
     }
 
     public function test_contrib_checkout_is_checked_against_contrib(): void
@@ -761,7 +641,7 @@ class ReleasePrepCommandTest extends TestCase
         $this->releases = ['contrib-auto-laravel' => '1.0.0'];
 
         $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
-        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php-contrib/git/ref/heads/main', $this->requests);
+        $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php-contrib/git/matching-refs/heads/main', $this->requests);
     }
 
     public function test_checkout_of_an_unknown_monorepo_fails(): void
@@ -867,13 +747,10 @@ class ReleasePrepCommandTest extends TestCase
         $client->method('sendRequest')->willReturnCallback(function (RequestInterface $request): Response {
             $url = (string) $request->getUri();
             $this->requests[] = $url;
-            if (preg_match('#/git/ref/heads/(.+)$#', $url, $m) === 1) {
+            if (preg_match('#/git/matching-refs/heads/(.+)$#', $url, $m) === 1) {
                 return $this->tip === null
                     ? new Response(500)
-                    : new Response(200, [], json_encode(['ref' => "refs/heads/{$m[1]}", 'object' => ['sha' => $this->tip]]));
-            }
-            if (preg_match('#/repos/opentelemetry-php/[^/]+$#', $url) === 1) {
-                return new Response(200, [], json_encode(['full_name' => substr($url, strlen('https://api.github.com/repos/'))]));
+                    : new Response(200, [], json_encode([['ref' => "refs/heads/{$m[1]}", 'object' => ['sha' => $this->tip]]]));
             }
             if ($this->latestStatus !== 200) {
                 return new Response($this->latestStatus);
@@ -899,7 +776,7 @@ class ReleasePrepCommandTest extends TestCase
             return $this->tipIsAncestor;
         });
         $git->method('changes')->willReturnCallback(fn (): array => $this->changes);
-        $this->tester = new CommandTester(new ReleasePrepCommand(new GitHub($client), $reader, $git));
+        $this->tester = new CommandTester(new ReleasePrepCommand($client, $reader, $git));
         $inputs = $options['inputs'] ?? [];
         unset($options['inputs']);
         $inputs !== [] && $this->tester->setInputs($inputs);

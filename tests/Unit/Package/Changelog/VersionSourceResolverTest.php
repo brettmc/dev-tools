@@ -39,7 +39,7 @@ class VersionSourceResolverTest extends TestCase
 
     public function test_sem_conv_takes_the_version_the_code_was_generated_from(): void
     {
-        $this->semConvVersion("1.45.0\n");
+        $this->versionTxt("https://opentelemetry.io/schemas/1.45.0\n");
 
         $source = $this->resolver->resolve('open-telemetry/sem-conv', $this->root(), 'src/SemConv');
 
@@ -48,10 +48,8 @@ class VersionSourceResolverTest extends TestCase
 
     public function test_sem_conv_ignores_a_stale_version_enum(): void
     {
-        vfsStream::create(['src' => ['SemConv' => [
-            'VERSION' => "1.45.0\n",
-            'Version.php' => "<?php\nenum Version: string\n{\n    case VERSION_1_44_0 = '1.44.0';\n}\n",
-        ]]], $this->root);
+        $this->versionTxt("https://opentelemetry.io/schemas/1.45.0\n");
+        vfsStream::create(['src' => ['SemConv' => ['Version.php' => "<?php\nenum Version: string\n{\n    case VERSION_1_44_0 = '1.44.0';\n}\n"]]], $this->root);
 
         $source = $this->resolver->resolve('open-telemetry/sem-conv', $this->root(), 'src/SemConv');
 
@@ -65,7 +63,7 @@ class VersionSourceResolverTest extends TestCase
 
     public function test_sem_conv_with_an_unparseable_version_file_has_none(): void
     {
-        $this->semConvVersion("main\n");
+        $this->versionTxt("not a schema url\n");
 
         $this->assertNull($this->resolver->resolve('open-telemetry/sem-conv', $this->root(), 'src/SemConv'));
     }
@@ -93,8 +91,8 @@ class VersionSourceResolverTest extends TestCase
         $this->assertNull($this->resolver->resolve('open-telemetry/gen-otlp-protobuf', $this->root(), 'proto/otel'));
     }
 
-    private function semConvVersion(string $contents): void
+    private function versionTxt(string $contents): void
     {
-        vfsStream::create(['src' => ['SemConv' => ['VERSION' => $contents]]], $this->root);
+        vfsStream::create(['script' => ['semantic-conventions' => ['templates' => ['registry' => ['php' => ['version.txt' => $contents]]]]]], $this->root);
     }
 }

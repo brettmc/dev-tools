@@ -4,14 +4,11 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Tests\Unit\Package\Changelog;
 
-use OpenTelemetry\DevTools\Package\Changelog\ChangelogException;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogReleases;
 use PHPUnit\Framework\TestCase;
 
 /**
  * @covers \OpenTelemetry\DevTools\Package\Changelog\ChangelogReleases
- * @covers \OpenTelemetry\DevTools\Package\Changelog\CodeFences
- * @covers \OpenTelemetry\DevTools\Package\Changelog\ChangelogException
  */
 class ChangelogReleasesTest extends TestCase
 {
@@ -109,45 +106,6 @@ MD;
     public function test_a_prefix_of_a_version_is_not_a_match(): void
     {
         $this->assertNull((new ChangelogReleases(self::CHANGELOG))->notes('1.4'));
-    }
-
-    public function test_headings_in_a_code_block_are_not_headings(): void
-    {
-        $changelog = <<<'MD'
-# Changelog
-
-## 1.1.0 - 2026-02-01
-
-- A new option:
-  ```md
-## 9.9.9 - 2026-01-01
-[x]: https://example.com/x
-  ```
-- Another [x].
-
-## 1.0.0 - 2026-01-01
-
-- First.
-MD;
-
-        $this->assertSame('1.1.0', (new ChangelogReleases("```\n## 9.9.9 - 2026-01-01\n```\n" . $changelog))->latest());
-        $this->assertSame(
-            "- A new option:\n  ```md\n## 9.9.9 - 2026-01-01\n[x]: https://example.com/x\n  ```\n- Another [x].",
-            (new ChangelogReleases($changelog))->notes('1.1.0')
-        );
-    }
-
-    public function test_an_unclosed_code_block_is_an_error(): void
-    {
-        $changelog = "# Changelog\n\n## 1.1.0 - 2026-02-01\n\n- A new option:\n  ```md\n  a: 1\n\n## 1.0.0 - 2026-01-01\n\n- First.\n";
-
-        try {
-            new ChangelogReleases($changelog);
-            $this->fail('No ChangelogException');
-        } catch (ChangelogException $e) {
-            $this->assertSame(6, $e->lineNumber);
-            $this->assertStringContainsString('code block is not closed', $e->getMessage());
-        }
     }
 
     public function test_crlf_line_endings_are_handled(): void

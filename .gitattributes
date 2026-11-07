@@ -1,11 +1,9 @@
 /docker export-ignore
 /examples export-ignore
 /tests export-ignore
-/vendor-bin export-ignore
 /.* export-ignore
 /*dist export-ignore
-/psalm-baseline.xml export-ignore
-/code-of-conduct.md export-ignore
+/code-of-conduct.md
 /CODEOWNERS export-ignore
 /CONTRIBUTING.md export-ignore
 /docker-compose* export-ignore
