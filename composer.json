@@ -13,6 +13,7 @@
     "prefer-stable": true,
     "require": {
         "php": "^8.2",
+        "ext-dom": "*",
         "ext-json": "*",
         "ext-simplexml": "*",
         "composer/composer": "^2.3",

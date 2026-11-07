@@ -44,6 +44,7 @@ class PeclCommandTest extends TestCase
     /** @var list<array{sha: string, author: string, message: string}> */
     private array $log = [['sha' => 'abc', 'author' => 'Octo Cat', 'message' => 'Fix hooks (#7)']];
     private ?string $logError = null;
+    private int $latestStatus = 200;
     private CommandTester $tester;
 
     #[\Override]
@@ -60,6 +61,7 @@ class PeclCommandTest extends TestCase
             $json = static fn (mixed $data): Response => new Response(200, [], json_encode($data));
 
             return match (true) {
+                $this->latestStatus !== 200 && str_ends_with($url, '/releases/latest') => new Response($this->latestStatus, [], '{"message": "Server Error"}'),
                 str_ends_with($url, '/releases/latest') => $json(['tag_name' => '1.2.0', 'created_at' => '2026-01-01T00:00:00Z']),
                 default => new Response(404),
             };
@@ -93,6 +95,62 @@ class PeclCommandTest extends TestCase
         $this->assertStringContainsString('<release>1.3.0</release>', $this->tester->getDisplay());
         $this->assertStringContainsString('releases/tag/1.3.0', $this->tester->getDisplay());
         $this->assertStringContainsString('<release>1.2.0</release>', $this->tester->getDisplay());
+    }
+
+    public function test_package_xml_moves_the_current_release_into_the_changelog(): void
+    {
+        $this->tester->setInputs(['1.3.0beta1', 'beta']);
+
+        $this->tester->execute(['--path' => $this->root->url()]);
+
+        $this->assertSame(<<<'XML'
+            <?xml version="1.0" encoding="UTF-8"?>
+            <package xmlns="http://pear.php.net/dtd/package-2.0" version="2.0">
+              <name>opentelemetry</name>
+              <date>DATE</date>
+              <time>TIME</time>
+              <version>
+                <release>1.3.0beta1</release>
+                <api>1.0</api>
+              </version>
+              <stability>
+                <release>beta</release>
+                <api>stable</api>
+              </stability>
+              <license>Apache 2.0</license>
+              <notes>See https://github.com/open-telemetry/opentelemetry-php-instrumentation/releases/tag/1.3.0beta1</notes>
+              <changelog>
+                <release>
+                  <date>2026-01-01</date>
+                  <time>00:00:00</time>
+                  <version>
+                    <release>1.2.0</release>
+                    <api>1.0</api>
+                  </version>
+                  <stability>
+                    <release>stable</release>
+                    <api>stable</api>
+                  </stability>
+                  <license>Apache 2.0</license>
+                  <notes>See https://github.com/open-telemetry/opentelemetry-php-instrumentation/releases/tag/1.2.0</notes>
+                </release>
+              </changelog>
+            </package>
+            XML, $this->packageXml());
+    }
+
+    public function test_current_notes_are_moved_to_the_changelog_escaped(): void
+    {
+        file_put_contents($this->root->url() . '/ext/package.xml', str_replace(
+            '<notes>See https://github.com/open-telemetry/opentelemetry-php-instrumentation/releases/tag/1.2.0</notes>',
+            '<notes>Fix A &amp; B</notes>',
+            self::PACKAGE_XML
+        ));
+        $this->tester->setInputs(['1.3.0', 'stable']);
+
+        $this->tester->execute(['--path' => $this->root->url()]);
+
+        $this->assertStringContainsString("<license>Apache 2.0</license>\n      <notes>Fix A &amp; B</notes>", $this->packageXml());
     }
 
     public function test_unreleased_commits_are_listed_by_subject_and_author(): void
@@ -129,6 +187,17 @@ class PeclCommandTest extends TestCase
         $this->assertStringContainsString('ext/package.xml', $this->tester->getDisplay());
     }
 
+    public function test_failed_latest_release_lookup_fails(): void
+    {
+        $this->latestStatus = 500;
+
+        $status = $this->tester->execute(['--path' => $this->root->url()]);
+
+        $this->assertSame(Command::FAILURE, $status);
+        $this->assertStringContainsString('Server Error', $this->tester->getDisplay());
+        $this->assertSame([], $this->logReads);
+    }
+
     public function test_unreadable_commits_fail(): void
     {
         $this->logError = 'fatal: not a git repository';
@@ -137,5 +206,18 @@ class PeclCommandTest extends TestCase
 
         $this->assertSame(Command::FAILURE, $status);
         $this->assertStringContainsString('fatal: not a git repository', $this->tester->getDisplay());
+    }
+
+    private function packageXml(): string
+    {
+        $display = $this->tester->getDisplay();
+        $xml = substr($display, (int) strpos($display, '<?xml'));
+
+        return (string) preg_replace(
+            '#<date>\d{4}-\d\d-\d\d</date>(\n  <time>)\d\d:\d\d:\d\d</time>(\n  <version>)#',
+            '<date>DATE</date>${1}TIME</time>${2}',
+            rtrim($xml),
+            1
+        );
     }
 }

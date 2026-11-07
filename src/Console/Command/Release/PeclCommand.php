@@ -6,12 +6,15 @@ namespace OpenTelemetry\DevTools\Console\Command\Release;
 
 use DOMDocument;
 use OpenTelemetry\DevTools\Console\Release\GitHub;
+use OpenTelemetry\DevTools\Console\Release\GitHubException;
 use OpenTelemetry\DevTools\Console\Release\Project;
+use OpenTelemetry\DevTools\Console\Release\Release;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use RuntimeException;
 use SimpleXMLElement;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Helper\QuestionHelper;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -63,7 +66,14 @@ class PeclCommand extends AbstractReleaseCommand
         $repository = new Repository();
         $repository->downstream = $project;
         $repository->upstream = $project;
-        $repository->latestRelease = $this->get_latest_release($repository);
+
+        try {
+            $repository->latestRelease = $this->get_latest_release($repository);
+        } catch (GitHubException $e) {
+            $this->output->writeln('<error>' . OutputFormatter::escape($e->getMessage()) . '</error>');
+
+            return Command::FAILURE;
+        }
         if ($repository->latestRelease === null) {
             $this->output->writeln("<error>No latest release found for {$repository->upstream}</error>");
 
@@ -87,26 +97,20 @@ class PeclCommand extends AbstractReleaseCommand
 
         $xml = new SimpleXMLElement((string) file_get_contents($packageXml));
 
-        $this->process($repository, $xml);
+        $this->process($repository, $repository->latestRelease, $xml);
 
         return Command::SUCCESS;
     }
 
-    /**
-     * @psalm-suppress PossiblyNullPropertyFetch
-     */
-    private function process(Repository $repository, SimpleXMLElement $xml): void
+    private function process(Repository $repository, Release $latest, SimpleXMLElement $xml): void
     {
         $cnt = count($repository->commits);
-        $this->output->writeln("<info>Last release {$repository->latestRelease->version} @ {$repository->latestRelease->timestamp}</info>");
+        $this->output->writeln("<info>Last release {$latest->version} @ {$latest->timestamp}</info>");
         $this->output->writeln("<info>[{$repository->downstream}]</info> {$cnt} unreleased change(s):");
         foreach ($repository->commits as $commit) {
             $this->output->writeln("<comment>* {$commit->subject} ({$commit->author})</comment>");
         }
-        $prev = ($repository->latestRelease === null)
-            ? '-nothing-'
-            : $repository->latestRelease->version;
-        $question = new Question("<question>Latest={$prev}, enter new tag (blank to skip):</question>", null);
+        $question = new Question("<question>Latest={$latest->version}, enter new tag (blank to skip):</question>", null);
 
         $helper = new QuestionHelper();
         $newVersion = $helper->ask($this->input, $this->output, $question);
@@ -144,16 +148,16 @@ class PeclCommand extends AbstractReleaseCommand
     {
         //add current release to changelog
         $release = $xml->changelog->addChild('release');
-        $release->addChild('date', (string) $xml->date);
-        $release->addChild('time', (string) $xml->time);
+        $release->addChild('date', self::text($xml->date));
+        $release->addChild('time', self::text($xml->time));
         $version = $release->addChild('version');
-        $version->addChild('release', (string) $xml->version->release);
-        $version->addChild('api', (string) $xml->version->api);
+        $version->addChild('release', self::text($xml->version->release));
+        $version->addChild('api', self::text($xml->version->api));
         $stability = $release->addChild('stability');
-        $stability->addChild('release', (string) $xml->stability->release);
-        $stability->addChild('api', (string) $xml->stability->api);
-        $release->addChild('license', (string) $xml->license);
-        $release->addChild('notes', (string) $xml->notes);
+        $stability->addChild('release', self::text($xml->stability->release));
+        $stability->addChild('api', self::text($xml->stability->api));
+        $release->addChild('license', self::text($xml->license));
+        $release->addChild('notes', self::text($xml->notes));
 
         //update new release details
         $xml->date = $new['date'];
@@ -171,6 +175,14 @@ class PeclCommand extends AbstractReleaseCommand
         $pretty->loadXML($xml->saveXML());
 
         return $pretty->saveXML();
+    }
+
+    /**
+     * addChild() takes its value as XML, not text, so an ampersand in it is an unterminated entity.
+     */
+    private static function text(?SimpleXMLElement $element): string
+    {
+        return htmlspecialchars((string) $element, ENT_XML1);
     }
 
     private function format_notes(string $version): string
