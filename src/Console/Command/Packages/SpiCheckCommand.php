@@ -71,7 +71,7 @@ class SpiCheckCommand extends BaseCommand
             return Command::FAILURE;
         }
         foreach ($found->missing as $provider) {
-            $output->writeln("<comment>{$provider} is registered in extra.spi but does not load</comment>");
+            $output->writeln("<error>{$provider} is registered in extra.spi but does not load</error>");
         }
         $report = $this->checker->check($found->dependencies, $checkout->aliases, $checkout->replace);
 
@@ -90,7 +90,7 @@ class SpiCheckCommand extends BaseCommand
             }
             $table->render();
         }
-        $failed = $report->failed();
+        $failed = $report->failed() || $found->missing !== [];
 
         if ($report->external !== []) {
             $output->writeln('');

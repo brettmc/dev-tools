@@ -381,8 +381,8 @@ Options:
 
 The checkout needs `composer install`: the attributes are read by a script run under its own PHP and
 autoloader. It prints a row per attribute, and exits non-zero when an alias or `replace` entry does not
-satisfy a constraint, or the outdated check fails. A provider registered in `extra.spi` that does not load
-is warned about.
+satisfy a constraint, when a provider registered in `extra.spi` does not load, or when the outdated check
+fails.
 
 ## Branch aliases
 

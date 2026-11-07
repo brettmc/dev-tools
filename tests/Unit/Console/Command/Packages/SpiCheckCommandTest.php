@@ -108,13 +108,13 @@ class SpiCheckCommandTest extends TestCase
         $this->assertSame(Command::SUCCESS, $this->run_check());
     }
 
-    public function test_a_provider_that_does_not_load_is_warned_about(): void
+    public function test_a_provider_that_does_not_load_fails_naming_it(): void
     {
         $this->checkout('1.5.x-dev', '1.5.x-dev');
         $this->reader->method('read')->willReturn(new ProviderDependencies([], ['Gone\Provider']));
 
-        $this->assertSame(Command::SUCCESS, $this->run_check());
-        $this->assertStringContainsString('Gone\Provider', $this->tester->getDisplay());
+        $this->assertSame(Command::FAILURE, $this->run_check());
+        $this->assertStringContainsString('Gone\Provider is registered in extra.spi but does not load', $this->tester->getDisplay());
     }
 
     public function test_a_checkout_without_vendor_fails(): void
