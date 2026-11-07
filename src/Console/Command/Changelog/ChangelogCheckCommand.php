@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Command\Changelog;
 
+use OpenTelemetry\DevTools\Console\Command\BaseCommand;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogException;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogParser;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
-use OpenTelemetry\DevTools\Util\Path;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Formatter\OutputFormatter;
@@ -21,7 +21,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  * Checks that each split package changed in a pull request has an entry in its CHANGELOG.md, and
  * that each changed CHANGELOG.md is one release:prep can read.
  */
-class ChangelogCheckCommand extends Command
+class ChangelogCheckCommand extends BaseCommand
 {
     public const NAME = 'changelog:check';
     private const CHANGELOG_FILE = 'CHANGELOG.md';
@@ -50,10 +50,9 @@ class ChangelogCheckCommand extends Command
     #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $path = Path::directory($input->getOption('path'));
+        $this->registerInputAndOutput($input, $output);
+        $path = $this->checkoutPath($input->getOption('path'));
         if ($path === null) {
-            $output->writeln("<error>--path {$input->getOption('path')} is not a directory</error>");
-
             return Command::FAILURE;
         }
         /** @var list<string> $revisions */

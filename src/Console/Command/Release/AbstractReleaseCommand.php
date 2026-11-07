@@ -245,18 +245,4 @@ abstract class AbstractReleaseCommand extends BaseCommand
     {
         return is_array($section) ? array_filter($section, 'is_string') : [];
     }
-
-    /**
-     * The checkout --path names, by default the working directory, made absolute; null, having
-     * said so, when it is not a directory.
-     */
-    protected function checkout_path(?string $path): ?string
-    {
-        $directory = Path::directory($path);
-        if ($directory === null) {
-            $this->output->writeln("<error>--path {$path} is not a directory</error>");
-        }
-
-        return $directory;
-    }
 }

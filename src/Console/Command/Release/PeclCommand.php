@@ -52,7 +52,7 @@ class PeclCommand extends AbstractReleaseCommand
     {
         $force = $input->getOption('force');
         $this->registerInputAndOutput($input, $output);
-        $path = $this->checkout_path($input->getOption('path'));
+        $path = $this->checkoutPath($input->getOption('path'));
         if ($path === null) {
             return Command::FAILURE;
         }

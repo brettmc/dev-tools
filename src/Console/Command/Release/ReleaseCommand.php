@@ -150,7 +150,7 @@ class ReleaseCommand extends AbstractReleaseCommand
 
             return Command::FAILURE;
         }
-        $path = $this->checkout_path($path);
+        $path = $this->checkoutPath($path);
         if ($path === null) {
             return Command::FAILURE;
         }

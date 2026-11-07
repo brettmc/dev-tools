@@ -37,7 +37,7 @@ class ReleaseListCommand extends AbstractReleaseCommand
         }
         $this->token = $this->token($input);
         $this->registerInputAndOutput($input, $output);
-        $path = $this->checkout_path($input->getOption('path'));
+        $path = $this->checkoutPath($input->getOption('path'));
         if ($path === null) {
             return Command::FAILURE;
         }

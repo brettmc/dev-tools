@@ -129,7 +129,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $this->token = $this->token($input);
         $dryRun = $this->dry_run = (bool) $input->getOption('dry-run');
         $this->source_branch = $input->getOption('branch') ?? 'main';
-        $path = $this->checkout_path($input->getOption('path'));
+        $path = $this->checkoutPath($input->getOption('path'));
         if ($path === null) {
             return Command::FAILURE;
         }

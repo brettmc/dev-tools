@@ -9,7 +9,6 @@ use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
 use OpenTelemetry\DevTools\Package\Spi\OutdatedDependencyRunner;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
 use OpenTelemetry\DevTools\Package\Spi\SplitDependencyChecker;
-use OpenTelemetry\DevTools\Util\Path;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\Table;
@@ -55,10 +54,8 @@ class SpiCheckCommand extends BaseCommand
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $this->registerInputAndOutput($input, $output);
-        $path = Path::directory($input->getOption('path'));
+        $path = $this->checkoutPath($input->getOption('path'));
         if ($path === null) {
-            $output->writeln("<error>--path {$input->getOption('path')} is not a directory</error>");
-
             return Command::FAILURE;
         }
 
