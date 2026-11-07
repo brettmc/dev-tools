@@ -30,21 +30,6 @@
                 <directory name="src"/>
             </errorLevel>
         </FalsableReturnStatement>
-        <PossiblyUnusedReturnValue>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyUnusedReturnValue>
-        <MissingTemplateParam>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </MissingTemplateParam>
-        <PossiblyUnusedParam>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyUnusedParam>
         <PossiblyFalseArgument>
             <errorLevel type="suppress">
                 <directory name="src"/>
