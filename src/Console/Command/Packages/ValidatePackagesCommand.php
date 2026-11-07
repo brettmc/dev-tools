@@ -9,6 +9,7 @@ use OpenTelemetry\DevTools\Console\Command\BaseCommand;
 use OpenTelemetry\DevTools\Console\Command\CommandRunner;
 use OpenTelemetry\DevTools\Console\Command\Packages\Behavior\UsesThirdPartyCommandTrait;
 use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
+use OpenTelemetry\DevTools\Util\Path;
 use RuntimeException;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputInterface;
@@ -43,7 +44,7 @@ class ValidatePackagesCommand extends BaseCommand
     {
         $this->registerInputAndOutput($input, $output);
 
-        $root = $this->root ?? (getcwd() ?: throw new RuntimeException('The working directory cannot be read'));
+        $root = Path::absolute($this->root ?? '.');
         $this->writeIntro($root);
 
         try {

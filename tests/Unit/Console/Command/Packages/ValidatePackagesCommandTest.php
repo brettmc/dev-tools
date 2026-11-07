@@ -64,6 +64,23 @@ class ValidatePackagesCommandTest extends TestCase
         $this->assertStringContainsString('Validating: src/A/composer.json', $commandTester->getDisplay());
     }
 
+    public function test_execute_from_a_relative_root(): void
+    {
+        $this->checkout(['src/A' => self::VALID_COMPOSER_FILE]);
+        $cwd = (string) getcwd();
+        chdir($this->root);
+
+        try {
+            $commandTester = new CommandTester(new ValidatePackagesCommand('.'));
+            $commandTester->execute([]);
+        } finally {
+            chdir($cwd);
+        }
+
+        $this->assertSame(Command::SUCCESS, $commandTester->getStatusCode(), $commandTester->getDisplay());
+        $this->assertStringContainsString('Validating composer files in: ' . realpath($this->root), $commandTester->getDisplay());
+    }
+
     public function test_execute_invalid(): void
     {
         $this->checkout(['src/A' => self::VALID_COMPOSER_FILE, 'src/B' => self::INVALID_COMPOSER_FILE, 'src/C' => self::VALID_COMPOSER_FILE]);

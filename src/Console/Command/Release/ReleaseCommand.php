@@ -12,6 +12,7 @@ use OpenTelemetry\DevTools\Console\Release\GitHubException;
 use OpenTelemetry\DevTools\Console\Release\Release;
 use OpenTelemetry\DevTools\Console\Release\ReleaseNotes;
 use OpenTelemetry\DevTools\Console\Release\Repository;
+use OpenTelemetry\DevTools\Package\Changelog\ChangelogException;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogReleases;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
@@ -248,7 +249,13 @@ class ReleaseCommand extends AbstractReleaseCommand
             return false;
         }
         $repository->commits = $commits;
-        $changelog = $this->read_changelog($repository);
+
+        try {
+            $changelog = $this->read_changelog($repository);
+        } catch (ChangelogException $e) {
+            return $commits === []
+                || !$this->problem("{$repository->upstream->path}/" . self::CHANGELOG_FILE . ": {$e->getMessage()}");
+        }
         $this->changelogs[(string) $repository->downstream] = $changelog;
 
         return $changelog !== null
@@ -677,6 +684,8 @@ class ReleaseCommand extends AbstractReleaseCommand
     /**
      * The package's CHANGELOG.md in the checkout, which is at the commit being released, or null
      * when it has none.
+     *
+     * @throws ChangelogException when it is malformed
      */
     private function read_changelog(Repository $repository): ?ChangelogReleases
     {

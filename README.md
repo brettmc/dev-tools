@@ -148,9 +148,12 @@ lines, and hold nested `- ` bullets and fenced code blocks:
 - Spans are no longer dropped at shutdown.
 ````
 
+Link definitions such as `[#12]: https://...` may go anywhere. A release's notes include the ones
+its entries use.
+
 Anything else under Unreleased is an error naming its line, rather than being left out of the
-release: an unknown heading, a `*` bullet, an entry before the first section, a paragraph, or a second
-`## Unreleased`.
+release: an unknown heading, a `*` bullet, an entry before the first section, a paragraph, a code
+block that is not closed, or a second `## Unreleased`.
 
 ## Check changelogs in a pull request
 

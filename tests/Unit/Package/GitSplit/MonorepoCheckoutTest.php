@@ -101,6 +101,9 @@ class MonorepoCheckoutTest extends TestCase
             'split not a map' => ["splits:\n  - src/API\n", '.gitsplit.yml split 1 has no prefix'],
             'splits not a list' => ["splits: src/API\n", '.gitsplit.yml splits is not a list'],
             'not yaml' => ["splits: [\n", '.gitsplit.yml does not parse'],
+            'empty file' => ['', '.gitsplit.yml has no splits'],
+            'scalar' => ["src/API\n", '.gitsplit.yml has no splits'],
+            'misspelled key' => ["split:\n  - prefix: \"src/API\"\n    target: \"https://github.com/opentelemetry-php/api.git\"\n", '.gitsplit.yml has no splits'],
         ];
     }
 

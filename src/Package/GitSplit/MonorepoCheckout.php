@@ -86,7 +86,10 @@ final class MonorepoCheckout
         } catch (ParseException $e) {
             throw new RuntimeException("{$file} does not parse: {$e->getMessage()}", 0, $e);
         }
-        $entries = is_array($config) ? $config['splits'] ?? [] : [];
+        if (!is_array($config) || !array_key_exists('splits', $config)) {
+            throw new RuntimeException("{$file} has no splits");
+        }
+        $entries = $config['splits'] ?? [];
         if (!is_array($entries) || !array_is_list($entries)) {
             throw new RuntimeException("{$file} splits is not a list");
         }

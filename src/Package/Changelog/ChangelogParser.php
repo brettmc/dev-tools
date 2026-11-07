@@ -8,7 +8,8 @@ namespace OpenTelemetry\DevTools\Package\Changelog;
  * Reads the entries under `## Unreleased` in a Keep a Changelog style file.
  *
  * Anything under Unreleased that would not survive into the release notes is an error rather than
- * being dropped: a line that is not a heading, a `- ` entry or the continuation of one.
+ * being dropped: a line that is not a heading, a `- ` entry, the continuation of one, or a link
+ * definition.
  */
 final class ChangelogParser
 {
@@ -62,7 +63,7 @@ final class ChangelogParser
 
                 continue;
             }
-            if (trim($line) === '') {
+            if (trim($line) === '' || preg_match(ChangelogReleases::DEFINITION, $line) === 1) {
                 $current = null;
 
                 continue;

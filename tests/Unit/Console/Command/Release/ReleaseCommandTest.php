@@ -816,6 +816,28 @@ class ReleaseCommandTest extends TestCase
         $this->assertStringContainsString('[DRY-RUN] opentelemetry-php/sem-conv has unreleased changes, but src/SemConv has no CHANGELOG.md', $this->output());
     }
 
+    public function test_changelog_with_an_unclosed_code_block_stops_the_run_naming_its_line(): void
+    {
+        $this->changelog = "# Changelog\n\n## 1.46.0 - 2026-11-04\n\n- A new option:\n  ```yaml\n\n" . self::CHANGELOG;
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(1, $status);
+        $this->assertNull($this->post());
+        $this->assertStringContainsString('src/SemConv/CHANGELOG.md: line 6: code block is not closed', $this->output());
+    }
+
+    public function test_package_without_changes_may_have_a_malformed_changelog(): void
+    {
+        $this->changelog = "# Changelog\n\n```\n";
+        $this->upstreamCommits = false;
+
+        $status = $this->run_release('', [], false);
+
+        $this->assertSame(0, $status);
+        $this->assertStringNotContainsString('CHANGELOG.md', $this->output());
+    }
+
     public function test_package_without_changes_does_not_need_a_changelog(): void
     {
         $this->changelog = null;

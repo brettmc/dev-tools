@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Tests\Unit\Package\Changelog;
 
+use OpenTelemetry\DevTools\Package\Changelog\ChangelogException;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogReleases;
 use PHPUnit\Framework\TestCase;
 
 /**
  * @covers \OpenTelemetry\DevTools\Package\Changelog\ChangelogReleases
  * @covers \OpenTelemetry\DevTools\Package\Changelog\CodeFences
+ * @covers \OpenTelemetry\DevTools\Package\Changelog\ChangelogException
  */
 class ChangelogReleasesTest extends TestCase
 {
@@ -133,6 +135,19 @@ MD;
             "- A new option:\n  ```md\n## 9.9.9 - 2026-01-01\n[x]: https://example.com/x\n  ```\n- Another [x].",
             (new ChangelogReleases($changelog))->notes('1.1.0')
         );
+    }
+
+    public function test_an_unclosed_code_block_is_an_error(): void
+    {
+        $changelog = "# Changelog\n\n## 1.1.0 - 2026-02-01\n\n- A new option:\n  ```md\n  a: 1\n\n## 1.0.0 - 2026-01-01\n\n- First.\n";
+
+        try {
+            new ChangelogReleases($changelog);
+            $this->fail('No ChangelogException');
+        } catch (ChangelogException $e) {
+            $this->assertSame(6, $e->lineNumber);
+            $this->assertStringContainsString('code block is not closed', $e->getMessage());
+        }
     }
 
     public function test_crlf_line_endings_are_handled(): void

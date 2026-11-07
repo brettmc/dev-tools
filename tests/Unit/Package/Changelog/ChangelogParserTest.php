@@ -301,6 +301,41 @@ class ChangelogParserTest extends TestCase
         $this->assertStringContainsString('code block', $error->getMessage());
     }
 
+    public function test_link_definitions_under_unreleased_are_not_entries(): void
+    {
+        $changes = $this->parser->parseUnreleased(self::HEADER . <<<'MD'
+            ## Unreleased
+
+            [#0]: https://example.com/0
+
+            ### Added
+
+            - A new thing ([#1]).
+            [#1]: https://example.com/1
+            [#2]:  https://example.com/2
+
+            MD);
+
+        $this->assertSame(['A new thing ([#1]).'], $changes->entries(ChangelogSection::Added));
+    }
+
+    public function test_link_definition_in_a_code_block_is_part_of_its_entry(): void
+    {
+        $changes = $this->parser->parseUnreleased(self::HEADER . <<<'MD'
+            ## Unreleased
+
+            ### Added
+
+            - Markdown:
+              ```md
+            [#1]: https://example.com/1
+              ```
+
+            MD);
+
+        $this->assertSame(["Markdown:\n```md\n[#1]: https://example.com/1\n```"], $changes->entries(ChangelogSection::Added));
+    }
+
     public function test_unreleased_as_the_last_line_is_empty(): void
     {
         $this->assertTrue($this->parser->parseUnreleased(self::HEADER . '## Unreleased')->isEmpty());

@@ -11,10 +11,23 @@ namespace OpenTelemetry\DevTools\Package\Changelog;
 final class ChangelogReleases
 {
     private const HEADING = '/^## \[?v?(\d+\.\d+\.\d+[0-9A-Za-z.+-]*)\]? - \d{4}-\d{2}-\d{2}\s*$/';
-    private const DEFINITION = '/^\[([^\]]+)\]:\s*\S+/';
+    public const DEFINITION = '/^\[([^\]]+)\]:\s*\S+/';
 
-    public function __construct(private readonly string $markdown)
+    /** @var list<array{string, bool}> each line, and whether it is part of a code block */
+    private readonly array $lines;
+
+    /**
+     * @throws ChangelogException when a code block is not closed, as every heading after it would be taken as code
+     */
+    public function __construct(string $markdown)
     {
+        $fences = new CodeFences();
+        $lines = [];
+        foreach (preg_split('/\R/', $markdown) ?: [] as $index => $line) {
+            $lines[] = [$line, $fences->read($line, $index + 1)];
+        }
+        $fences->end();
+        $this->lines = $lines;
     }
 
     /**
@@ -22,7 +35,7 @@ final class ChangelogReleases
      */
     public function latest(): ?string
     {
-        foreach ($this->lines() as [$line, $fenced]) {
+        foreach ($this->lines as [$line, $fenced]) {
             if (!$fenced && preg_match(self::HEADING, $line, $m) === 1) {
                 return $m[1];
             }
@@ -41,7 +54,7 @@ final class ChangelogReleases
         $version = ltrim($version, 'v');
         $body = [];
         $inSection = false;
-        foreach ($this->lines() as [$line, $fenced]) {
+        foreach ($this->lines as [$line, $fenced]) {
             if (!$fenced && str_starts_with($line, '## ')) {
                 if ($inSection) {
                     break;
@@ -69,26 +82,12 @@ final class ChangelogReleases
     private function definitionsUsedBy(string $text): array
     {
         $used = [];
-        foreach ($this->lines() as [$line, $fenced]) {
+        foreach ($this->lines as [$line, $fenced]) {
             if (!$fenced && preg_match(self::DEFINITION, $line, $m) === 1 && str_contains($text, "[{$m[1]}]")) {
                 $used[] = rtrim($line);
             }
         }
 
         return $used;
-    }
-
-    /**
-     * @return list<array{string, bool}> each line, and whether it is part of a code block
-     */
-    private function lines(): array
-    {
-        $fences = new CodeFences();
-        $lines = [];
-        foreach (preg_split('/\R/', $this->markdown) ?: [] as $index => $line) {
-            $lines[] = [$line, $fences->read($line, $index + 1)];
-        }
-
-        return $lines;
     }
 }
