@@ -70,12 +70,12 @@ final class ReleaseOrderChecker
             }
         }
 
-        [$order, $cycle] = $this->sort($after, array_keys($released));
-        if ($cycle !== []) {
-            $warnings[] = sprintf('circular dependency between %s, no safe tag order', implode(', ', $cycle));
+        [$order, $stuck] = $this->sort($after, array_keys($released));
+        if ($stuck !== []) {
+            $warnings[] = sprintf('circular dependency between %s, no safe tag order', implode(', ', $this->cycle($after, $stuck)));
         }
 
-        return new ReleaseOrderReport([...$order, ...$cycle], $warnings);
+        return new ReleaseOrderReport([...$order, ...$stuck], $warnings);
     }
 
     /**
@@ -112,7 +112,7 @@ final class ReleaseOrderChecker
     /**
      * @param array<string, array<string, true>> $after packages each package has to be tagged after
      * @param list<string> $names
-     * @return array{0: list<string>, 1: list<string>} packages in tag order, and those stuck in a cycle
+     * @return array{0: list<string>, 1: list<string>} packages in tag order, and those stuck behind a cycle
      */
     private function sort(array $after, array $names): array
     {
@@ -139,5 +139,32 @@ final class ReleaseOrderChecker
         }
 
         return [$order, []];
+    }
+
+    /**
+     * The packages in $stuck that wait on themselves. The rest only wait on one of them.
+     *
+     * @param array<string, array<string, true>> $after
+     * @param list<string> $stuck
+     * @return list<string>
+     */
+    private function cycle(array $after, array $stuck): array
+    {
+        return array_values(array_filter($stuck, static function (string $name) use ($after): bool {
+            $seen = [];
+            $next = array_keys($after[$name] ?? []);
+            while ($next !== []) {
+                $current = array_pop($next);
+                if ($current === $name) {
+                    return true;
+                }
+                if (!isset($seen[$current])) {
+                    $seen[$current] = true;
+                    array_push($next, ...array_keys($after[$current] ?? []));
+                }
+            }
+
+            return false;
+        }));
     }
 }
