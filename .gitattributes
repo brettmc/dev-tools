@@ -4,6 +4,7 @@
 /vendor-bin export-ignore
 /.* export-ignore
 /*dist export-ignore
+/psalm-baseline.xml export-ignore
 /code-of-conduct.md export-ignore
 /CODEOWNERS export-ignore
 /CONTRIBUTING.md export-ignore
