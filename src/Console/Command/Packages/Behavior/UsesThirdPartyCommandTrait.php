@@ -12,7 +12,6 @@ use Composer\IO\ConsoleIO;
 use Composer\IO\NullIO;
 use InvalidArgumentException;
 use OpenTelemetry\DevTools\Console\Command\CommandRunner;
-use OpenTelemetry\DevTools\Util\WorkingDirectoryResolver;
 use ReflectionClass;
 use RuntimeException;
 use Symfony\Component\Console\Application;
@@ -46,7 +45,7 @@ trait UsesThirdPartyCommandTrait
         OutputInterface $output,
         ?string $workingDirectory = null
     ): int {
-        $oldWorkingDir = WorkingDirectoryResolver::create()->resolve();
+        $oldWorkingDir = getcwd() ?: throw new RuntimeException('The working directory cannot be read');
 
         try {
             if (is_string($workingDirectory) && is_dir($workingDirectory)) {

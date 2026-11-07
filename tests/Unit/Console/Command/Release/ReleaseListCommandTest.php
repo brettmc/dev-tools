@@ -102,6 +102,15 @@ class ReleaseListCommandTest extends TestCase
         $this->assertStringContainsString('not a monorepo checkout', $this->tester->getDisplay());
     }
 
+    public function test_split_without_a_target_fails_naming_it(): void
+    {
+        file_put_contents($this->root->url() . '/.gitsplit.yml', "splits:\n  - prefix: \"src/API\"\n");
+
+        $this->assertSame(Command::FAILURE, $this->tester->execute(['--path' => $this->root->url()]));
+        $this->assertSame([], $this->urls);
+        $this->assertStringContainsString('.gitsplit.yml split 1 has no target', $this->tester->getDisplay());
+    }
+
     public function test_path_that_does_not_exist_fails_naming_it(): void
     {
         $this->assertSame(Command::FAILURE, $this->tester->execute(['--path' => '/nowhere/monorepo']));

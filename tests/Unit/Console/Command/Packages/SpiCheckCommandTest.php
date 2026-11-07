@@ -132,6 +132,16 @@ class SpiCheckCommandTest extends TestCase
         $this->assertStringContainsString('.gitsplit.yml', $this->tester->getDisplay());
     }
 
+    public function test_a_split_without_a_target_fails_naming_it(): void
+    {
+        $this->checkout('1.5.x-dev', '1.5.x-dev');
+        file_put_contents("{$this->root->url()}/.gitsplit.yml", "splits:\n  - prefix: \"src/Contrib/Otlp\"\n");
+        $this->dependencies();
+
+        $this->assertSame(Command::FAILURE, $this->run_check());
+        $this->assertStringContainsString('split 1 has no target', $this->tester->getDisplay());
+    }
+
     public function test_a_path_that_does_not_exist_fails_naming_it(): void
     {
         $this->assertSame(Command::FAILURE, $this->tester->execute(['--path' => '/nowhere/monorepo']));

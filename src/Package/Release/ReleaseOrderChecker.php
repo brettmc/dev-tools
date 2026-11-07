@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Package\Release;
 
-use Composer\Semver\Constraint\Constraint;
 use Composer\Semver\Constraint\ConstraintInterface;
 use Composer\Semver\VersionParser;
+use OpenTelemetry\DevTools\Package\Composer\VersionMatcher;
 use UnexpectedValueException;
 
 /**
@@ -51,12 +51,12 @@ final class ReleaseOrderChecker
                 if ($dependency === null || $new === null || $parsed === null) {
                     continue;
                 }
-                if (!$this->matches($parsed, $new)) {
+                if (!VersionMatcher::matches($parsed, $new)) {
                     $warnings[] = sprintf('%s %s %s %s, which excludes %s', $package->name, $verb, $name, $constraint, $new);
 
                     continue;
                 }
-                if ($name !== $package->name && isset($released[$package->name]) && !$this->matches($parsed, $dependency->latest)) {
+                if ($name !== $package->name && isset($released[$package->name]) && !VersionMatcher::matches($parsed, $dependency->latest)) {
                     $after[$package->name][$name] = true;
                 }
             }
@@ -64,7 +64,7 @@ final class ReleaseOrderChecker
                 $dependency = $released[$name] ?? null;
                 $parsed = $dependency === null ? null : $this->constraint($constraint);
                 $new = $dependency?->version;
-                if ($new !== null && $parsed !== null && $this->matches($parsed, $new)) {
+                if ($new !== null && $parsed !== null && VersionMatcher::matches($parsed, $new)) {
                     $warnings[] = sprintf('%s conflicts with %s %s, which matches %s', $package->name, $name, $constraint, $new);
                 }
             }
@@ -106,19 +106,6 @@ final class ReleaseOrderChecker
             return $this->parser->parseConstraints($constraint);
         } catch (UnexpectedValueException) {
             return null;
-        }
-    }
-
-    private function matches(ConstraintInterface $constraint, ?string $version): bool
-    {
-        if ($version === null) {
-            return false;
-        }
-
-        try {
-            return $constraint->matches(new Constraint('==', $this->parser->normalize($version)));
-        } catch (UnexpectedValueException) {
-            return false;
         }
     }
 

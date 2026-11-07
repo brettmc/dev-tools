@@ -10,17 +10,15 @@ use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\Project;
 use OpenTelemetry\DevTools\Console\Release\Release;
 use OpenTelemetry\DevTools\Console\Release\Repository;
-use OpenTelemetry\DevTools\Package\Composer\ConfigAttributes;
-use OpenTelemetry\DevTools\Package\Composer\PackageAttributeResolver;
+use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
 use OpenTelemetry\DevTools\Util\Path;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Yaml\Parser;
 
 abstract class AbstractReleaseCommand extends BaseCommand
 {
-    protected const GITSPLIT_FILE = '.gitsplit.yml';
     protected const COMPOSER_FILE = 'composer.json';
     protected const AVAILABLE_REPOS = [
         'core'    => 'open-telemetry/opentelemetry-php',
@@ -32,7 +30,6 @@ abstract class AbstractReleaseCommand extends BaseCommand
         'open-telemetry/opentelemetry-php-contrib' => 'open-telemetry/opentelemetry-php-contrib',
     ];
     protected GitHub $github;
-    protected Parser $parser;
     protected ?string $token = null;
     protected bool $dry_run = false;
     protected string $source_branch = 'main';
@@ -137,27 +134,55 @@ abstract class AbstractReleaseCommand extends BaseCommand
     }
 
     /**
-     * The name in the root composer.json of the checkout at $path, or '' when it has none.
+     * The monorepo checked out at $path, read from its own .gitsplit.yml. Null, having said why, when
+     * it is not a monorepo checkout or its .gitsplit.yml is malformed.
      */
-    protected function root_package_name(string $path): string
+    protected function read_monorepo(string $path): ?MonorepoCheckout
     {
-        $json = json_decode((string) file_get_contents($path . '/' . self::COMPOSER_FILE), true);
+        try {
+            return MonorepoCheckout::read($path);
+        } catch (\RuntimeException $e) {
+            $this->output->writeln('<error>' . OutputFormatter::escape($e->getMessage()) . '</error>');
+            if (!MonorepoCheckout::isCheckout($path)) {
+                $repos = implode(' or ', self::AVAILABLE_REPOS);
+                $this->output->writeln("<comment>Run this command from a {$repos} checkout, or pass --path=</comment>");
+            }
 
-        return is_array($json) && is_string($json['name'] ?? null) ? $json['name'] : '';
+            return null;
+        }
     }
 
     /**
-     * Map the `splits` of a .gitsplit.yml onto repositories, where $upstream is the monorepo that
-     * those splits are made from.
+     * Which of core and contrib the checkout is of, from its root composer.json name. Null, having
+     * said so, when it is neither.
+     */
+    protected function upstream(string $path, MonorepoCheckout $monorepo): ?string
+    {
+        $upstream = array_search($monorepo->name, self::ROOT_PACKAGES, true);
+        if ($upstream === false) {
+            $this->output->writeln(sprintf(
+                '<error>%s is not a checkout of %s: its composer.json is named "%s"</error>',
+                $path,
+                implode(' or ', array_keys(self::ROOT_PACKAGES)),
+                $monorepo->name,
+            ));
+
+            return null;
+        }
+
+        return $upstream;
+    }
+
+    /**
+     * The split packages of $monorepo as repositories, where $upstream is the monorepo that those
+     * splits are made from.
      *
-     * @param array<array{prefix: string, target: string}> $splits
      * @return array<Repository>
      */
-    protected function map_gitsplit_repositories(array $splits, string $upstream, ?string $filter): array
+    protected function split_repositories(MonorepoCheckout $monorepo, string $upstream, ?string $filter): array
     {
         $repositories = [];
-        foreach ($splits as $entry) {
-            $prefix = $entry['prefix'];
+        foreach ($monorepo->splits as $prefix => $downstream) {
             if ($filter && stripos($prefix, $filter) === false) {
                 $this->output->isVerbose() && $this->output->writeln(sprintf('[SKIP] %s does not match filter: %s', $prefix, $filter));
 
@@ -166,8 +191,7 @@ abstract class AbstractReleaseCommand extends BaseCommand
             $repository = new Repository();
             $repository->upstream = new Project($upstream);
             $repository->upstream->path = $prefix;
-            $target = $entry['target'];
-            $repository->downstream = new Project(str_replace(['https://${GH_TOKEN}@github.com/', '.git'], ['',''], $target));
+            $repository->downstream = new Project($downstream);
             $repositories[] = $repository;
         }
 
@@ -179,34 +203,20 @@ abstract class AbstractReleaseCommand extends BaseCommand
     }
 
     /**
-     * The packages of the monorepo checked out at $path, from its own .gitsplit.yml: the root
-     * composer.json of a monorepo is not named after its repository (core is
-     * `open-telemetry/opentelemetry`), so the presence of split config is what identifies it.
+     * The package name and composer.json of a split in the checkout at $path. The name is not always
+     * derivable from the name of the repository it is split to, so it falls back to that guess only
+     * when there is no composer.json, or it has no name.
      *
-     * @param ?string $upstream the repository the splits are made from, when known; otherwise the
-     *        root package name stands in for it
-     * @return array<Repository>|null null when $path is not a monorepo checkout
+     * @return array{0: string, 1: array}
      */
-    protected function find_split_packages(string $path, ?string $filter, ?string $upstream = null): ?array
+    protected function split_composer(string $path, Repository $repository): array
     {
-        $gitsplitFile = $path . '/' . self::GITSPLIT_FILE;
-        $composerFile = $path . '/' . self::COMPOSER_FILE;
-        if (!file_exists($gitsplitFile) || !file_exists($composerFile)) {
-            $repos = implode(' or ', self::AVAILABLE_REPOS);
-            $this->output->writeln(sprintf(
-                '<error>%s is not a monorepo checkout (no %s and %s found)</error>',
-                $path,
-                self::GITSPLIT_FILE,
-                self::COMPOSER_FILE
-            ));
-            $this->output->writeln("<comment>Run this command from a {$repos} checkout, or pass --path=</comment>");
+        $file = Path::contained($path, $repository->upstream->path, self::COMPOSER_FILE);
+        $json = $file !== null && is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
+        $composer = is_array($json) ? $json : [];
+        $name = $composer['name'] ?? null;
 
-            return null;
-        }
-        $config = $this->parser->parse((string) file_get_contents($gitsplitFile));
-        $name = $upstream ?? (string) PackageAttributeResolver::create($composerFile)->resolve(ConfigAttributes::NAME);
-
-        return $this->map_gitsplit_repositories($config['splits'] ?? [], $name, $filter);
+        return [is_string($name) ? $name : "open-telemetry/{$repository->downstream->project}", $composer];
     }
 
     /**

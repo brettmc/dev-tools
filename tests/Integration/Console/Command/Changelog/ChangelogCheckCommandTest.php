@@ -216,6 +216,14 @@ class ChangelogCheckCommandTest extends TestCase
         $this->assertStringContainsString('.gitsplit.yml', $this->tester->getDisplay());
     }
 
+    public function test_split_without_a_target_fails_naming_it(): void
+    {
+        $this->write('.gitsplit.yml', "splits:\n  - prefix: \"src/API\"\n");
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD'));
+        $this->assertStringContainsString('split 1 has no target', $this->display());
+    }
+
     public function test_path_that_does_not_exist_fails_naming_it(): void
     {
         $this->assertSame(Command::FAILURE, $this->tester->execute(['--path' => "{$this->dir}/missing"]));

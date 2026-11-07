@@ -35,6 +35,8 @@ class ReleaseCommandTest extends TestCase
     private string $latestTag = '1.44.0';
     /** @var array<string, array{0: string, 1: string, 2: ?string}> prefix, latest tag and changelog by project; sem-conv alone when empty */
     private array $splits = [];
+    /** .gitsplit.yml as written, when a test needs it malformed */
+    private ?string $gitsplit = null;
     private ProviderDependencies $dependencies;
     private ?RuntimeException $readError = null;
     private ?string $head = 'abc123';
@@ -519,6 +521,20 @@ class ReleaseCommandTest extends TestCase
         $this->assertStringContainsString('not a checkout of open-telemetry/opentelemetry-php', $this->output());
     }
 
+    public function test_without_repo_a_checkout_of_neither_monorepo_fails_naming_its_root(): void
+    {
+        file_put_contents($this->root->url() . '/composer.json', '{"name":"acme/monorepo"}');
+
+        $status = $this->run_release('', ['--repo' => null], false);
+
+        $this->assertSame(1, $status);
+        $this->assertSame([], $this->requests);
+        $this->assertStringContainsString(
+            'is not a checkout of open-telemetry/opentelemetry-php or open-telemetry/opentelemetry-php-contrib: its composer.json is named "acme/monorepo"',
+            $this->output()
+        );
+    }
+
     public function test_contrib_checkout_is_used_for_contrib(): void
     {
         file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry-php-contrib"}');
@@ -647,6 +663,17 @@ class ReleaseCommandTest extends TestCase
 
         $this->assertSame([], $this->requests);
         $this->assertStringContainsString('not a monorepo checkout', $this->output());
+    }
+
+    public function test_split_without_a_target_fails_before_calling_github(): void
+    {
+        $this->gitsplit = "splits:\n  - prefix: \"src/SemConv\"\n";
+
+        $status = $this->run_release('');
+
+        $this->assertSame(1, $status);
+        $this->assertSame([], $this->requests);
+        $this->assertStringContainsString('.gitsplit.yml split 1 has no target', $this->output());
     }
 
     public function test_path_that_does_not_exist_fails_naming_it(): void
@@ -1155,7 +1182,7 @@ class ReleaseCommandTest extends TestCase
             is_dir($dir) || mkdir($dir, 0o777, true);
             $changelog === null || file_put_contents("{$dir}/CHANGELOG.md", $changelog);
         }
-        file_put_contents($gitsplit, $yaml);
+        file_put_contents($gitsplit, $this->gitsplit ?? $yaml);
     }
 
     private function output(): string

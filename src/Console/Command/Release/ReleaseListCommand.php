@@ -11,7 +11,6 @@ use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Yaml\Parser;
 
 class ReleaseListCommand extends AbstractReleaseCommand
 {
@@ -37,17 +36,17 @@ class ReleaseListCommand extends AbstractReleaseCommand
             throw new \InvalidArgumentException('Can only use one of stable/unstable');
         }
         $this->token = $this->token($input);
-        $this->parser = new Parser();
         $this->registerInputAndOutput($input, $output);
         $path = $this->checkout_path($input->getOption('path'));
         if ($path === null) {
             return Command::FAILURE;
         }
 
-        $found = $this->find_split_packages($path, null);
-        if ($found === null) {
+        $monorepo = $this->read_monorepo($path);
+        if ($monorepo === null) {
             return Command::FAILURE;
         }
+        $found = $this->split_repositories($monorepo, $monorepo->name, null);
         if (count($found) === 0) {
             $this->output->writeln('<error>No repositories found!</error>');
 

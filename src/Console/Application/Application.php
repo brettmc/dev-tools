@@ -13,7 +13,6 @@ use OpenTelemetry\DevTools\Console\Command\Release\PeclTagCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseListCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrepCommand;
-use OpenTelemetry\DevTools\Package\GitSplit\ConfigResolver;
 use Symfony\Component\Console\Application as BaseApplication;
 
 class Application extends BaseApplication
@@ -30,9 +29,7 @@ class Application extends BaseApplication
     private function initCommands(): void
     {
         $this->addCommands([
-            new ValidatePackagesCommand(
-                new ConfigResolver()
-            ),
+            new ValidatePackagesCommand(),
             new ReleaseCommand(),
             new ReleaseListCommand(),
             new PeclCommand(),

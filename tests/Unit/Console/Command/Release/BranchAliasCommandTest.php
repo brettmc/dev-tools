@@ -100,6 +100,19 @@ class BranchAliasCommandTest extends TestCase
         $this->assertStringContainsString('is not a monorepo checkout', $this->commandTester->getDisplay());
     }
 
+    public function test_fails_when_a_split_has_no_prefix(): void
+    {
+        vfsStream::newFile('composer.json')
+            ->withContent('{"name":"open-telemetry/opentelemetry"}')
+            ->at($this->root);
+        vfsStream::newFile('.gitsplit.yml')
+            ->withContent("splits:\n  - target: \"https://github.com/opentelemetry-php/api.git\"\n")
+            ->at($this->root);
+
+        $this->assertSame(Command::FAILURE, $this->execute($this->root->url()));
+        $this->assertStringContainsString('.gitsplit.yml split 1 has no prefix', $this->commandTester->getDisplay());
+    }
+
     public function test_fails_when_split_config_has_no_packages(): void
     {
         vfsStream::newFile('composer.json')

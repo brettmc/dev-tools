@@ -25,11 +25,6 @@
                 <directory name="src"/>
             </errorLevel>
         </UnusedClass>
-        <FalsableReturnStatement>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </FalsableReturnStatement>
         <PossiblyFalseArgument>
             <errorLevel type="suppress">
                 <directory name="src"/>

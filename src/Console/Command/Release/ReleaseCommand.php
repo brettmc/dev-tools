@@ -14,6 +14,7 @@ use OpenTelemetry\DevTools\Console\Release\ReleaseNotes;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogReleases;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
+use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
 use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
@@ -28,7 +29,6 @@ use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\ConfirmationQuestion;
 use Symfony\Component\Console\Question\Question;
-use Symfony\Component\Yaml\Parser;
 
 class ReleaseCommand extends AbstractReleaseCommand
 {
@@ -132,7 +132,6 @@ class ReleaseCommand extends AbstractReleaseCommand
         }
         $source = $input->getOption('repo');
         $filter = $input->getOption('filter');
-        $this->parser = new Parser();
         //sections redraw in place on stdout, which holds only the JSON in that format
         $progress_section = $output instanceof ConsoleOutputInterface ? $output->section() : $output;
         $main_section = $output instanceof ConsoleOutputInterface ? $output->section() : $output;
@@ -165,7 +164,7 @@ class ReleaseCommand extends AbstractReleaseCommand
         }
 
         $repositories = [];
-        $found = $this->find_split_packages($checkout['path'], $filter, $checkout['upstream']) ?? [];
+        $found = $this->split_repositories($checkout['monorepo'], $checkout['upstream'], $filter);
         if (count($found) === 0) {
             $this->output->writeln('<error>No repositories found!</error>');
 
@@ -292,35 +291,24 @@ class ReleaseCommand extends AbstractReleaseCommand
      * head is null when git could not read it, which only a dry run carries on from.
      *
      * @param ?string $upstream the monorepo to release, or null for whichever the checkout is of
-     * @return array{path: string, upstream: string, head: ?string, dependencies: ProviderDependencies}|null
+     * @return array{path: string, upstream: string, monorepo: MonorepoCheckout, head: ?string, dependencies: ProviderDependencies}|null
      */
     private function read_checkout(string $path, ?string $upstream): ?array
     {
-        $splits = $this->find_split_packages($path, null);
-        if ($splits === null) {
+        $monorepo = $this->read_monorepo($path);
+        if ($monorepo === null) {
             return null;
         }
-        $name = $this->root_package_name($path);
+        $upstream ??= $this->upstream($path, $monorepo);
         if ($upstream === null) {
-            $found = array_search($name, self::ROOT_PACKAGES, true);
-            if ($found === false) {
-                $this->output->writeln(sprintf(
-                    '<error>%s is not a checkout of %s: its composer.json is named "%s"</error>',
-                    $path,
-                    implode(' or ', array_keys(self::ROOT_PACKAGES)),
-                    $name,
-                ));
-
-                return null;
-            }
-            $upstream = $found;
+            return null;
         }
-        if ($name !== self::ROOT_PACKAGES[$upstream]) {
+        if ($monorepo->name !== self::ROOT_PACKAGES[$upstream]) {
             $this->output->writeln(sprintf(
                 '<error>%s is not a checkout of %s: its composer.json is named "%s", not "%s"</error>',
                 $path,
                 $upstream,
-                $name,
+                $monorepo->name,
                 self::ROOT_PACKAGES[$upstream],
             ));
 
@@ -340,7 +328,7 @@ class ReleaseCommand extends AbstractReleaseCommand
             //for the notes, or a provider for the tag order
             $changes = [
                 ...$this->git->changes($path),
-                ...$this->git->untracked($path, array_map(static fn (Repository $split): string => $split->upstream->path, $splits)),
+                ...$this->git->untracked($path, $monorepo->prefixes),
             ];
             if ($changes !== [] && $this->problem("{$path} has uncommitted changes, which would not be in the release:\n  " . implode("\n  ", $changes))) {
                 return null;
@@ -360,7 +348,7 @@ class ReleaseCommand extends AbstractReleaseCommand
             return null;
         }
 
-        return ['path' => $path, 'upstream' => $upstream, 'head' => $head, 'dependencies' => $dependencies];
+        return ['path' => $path, 'upstream' => $upstream, 'monorepo' => $monorepo, 'head' => $head, 'dependencies' => $dependencies];
     }
 
     /**
@@ -368,7 +356,7 @@ class ReleaseCommand extends AbstractReleaseCommand
      * the branch as the run starts. Everything after reads that commit rather than the branch, so a
      * merge during the run is neither tagged nor a reason to stop.
      *
-     * @param array{path: string, upstream: string, head: ?string, dependencies: ProviderDependencies} $checkout
+     * @param array{path: string, upstream: string, monorepo: MonorepoCheckout, head: ?string, dependencies: ProviderDependencies} $checkout
      * @return bool false when the run should stop, having said why
      */
     private function choose_sha(array $checkout, ?string $sha): bool
@@ -497,7 +485,7 @@ class ReleaseCommand extends AbstractReleaseCommand
      * suggests, as that is what release:prep wrote. Other packages keep their place.
      *
      * @param array<Repository> $repositories
-     * @param array{path: string, upstream: string, head: ?string, dependencies: ProviderDependencies} $checkout
+     * @param array{path: string, upstream: string, monorepo: MonorepoCheckout, head: ?string, dependencies: ProviderDependencies} $checkout
      * @return array<Repository>
      */
     private function order(array $repositories, array $checkout): array
@@ -514,10 +502,7 @@ class ReleaseCommand extends AbstractReleaseCommand
         $byName = [];
         foreach ($local as $index => $repository) {
             $prefix = $repository->upstream->path;
-            $file = Path::contained($checkout['path'], $prefix, self::COMPOSER_FILE);
-            $json = $file !== null && is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
-            $composer = is_array($json) ? $json : [];
-            $name = is_string($composer['name'] ?? null) ? $composer['name'] : "open-telemetry/{$repository->downstream->project}";
+            [$name, $composer] = $this->split_composer($checkout['path'], $repository);
             $latest = $repository->latestRelease?->version;
             $packages[] = new PackageRelease(
                 $name,

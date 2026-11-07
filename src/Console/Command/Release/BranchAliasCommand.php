@@ -16,7 +16,6 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\ConsoleSectionOutput;
 use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Yaml\Parser;
 
 /**
  * Update `extra.branch-alias` in each package of a monorepo checkout, so that the alias for the
@@ -62,18 +61,11 @@ class BranchAliasCommand extends AbstractReleaseCommand
             return Command::FAILURE;
         }
 
-        $this->parser = new Parser();
-
-        try {
-            $found = $this->find_split_packages($path, $input->getOption('filter'));
-        } catch (\Exception $e) {
-            $this->output->writeln("<error>{$e->getCode()} {$e->getMessage()}</error>");
-
+        $monorepo = $this->read_monorepo($path);
+        if ($monorepo === null) {
             return Command::FAILURE;
         }
-        if ($found === null) {
-            return Command::FAILURE;
-        }
+        $found = $this->split_repositories($monorepo, $monorepo->name, $input->getOption('filter'));
         if (count($found) === 0) {
             $this->output->writeln('<error>No packages found!</error>');
 

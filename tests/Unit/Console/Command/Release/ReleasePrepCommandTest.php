@@ -391,6 +391,16 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('is not a monorepo checkout', $this->tester->getDisplay());
     }
 
+    public function test_split_without_a_target_fails_naming_it(): void
+    {
+        $this->monorepo([]);
+        file_put_contents($this->root->url() . '/.gitsplit.yml', "splits:\n  - prefix: \"src/API\"\n");
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
+        $this->assertSame([], $this->requests);
+        $this->assertStringContainsString('.gitsplit.yml split 1 has no target', $this->tester->getDisplay());
+    }
+
     public function test_path_that_does_not_exist_fails_naming_it(): void
     {
         $this->assertSame(Command::FAILURE, $this->prep(['--path' => '/nowhere/monorepo'], ['interactive' => false]));
@@ -671,6 +681,19 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertContains('https://api.github.com/repos/open-telemetry/opentelemetry-php/git/ref/heads/main', $this->requests);
         $this->assertSame([[$this->root->url(), 'abc123', 'HEAD']], $this->ancestorChecks);
         $this->assertStringContainsString('## 1.10.2 - 2026-11-03', $this->changelog('src/API'));
+    }
+
+    public function test_checkout_of_neither_monorepo_fails_naming_its_root(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        file_put_contents($this->root->url() . '/composer.json', '{"name":"acme/monorepo"}');
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString(
+            'is not a checkout of open-telemetry/opentelemetry-php or open-telemetry/opentelemetry-php-contrib: its composer.json is named "acme/monorepo"',
+            $this->tester->getDisplay()
+        );
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
     }
 
     public function test_checkout_without_the_branch_tip_fails_and_says_to_fetch(): void

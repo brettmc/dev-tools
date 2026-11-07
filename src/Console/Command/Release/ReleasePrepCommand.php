@@ -32,7 +32,6 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Yaml\Parser;
 
 /**
  * Suggest the next version of each package of a monorepo checkout from its CHANGELOG.md, and
@@ -147,30 +146,23 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             return Command::FAILURE;
         }
 
-        $this->parser = new Parser();
-
-        try {
-            $found = $this->find_split_packages($path, $input->getOption('filter'));
-        } catch (\Exception $e) {
-            $output->writeln("<error>{$e->getCode()} {$e->getMessage()}</error>");
-
+        $monorepo = $this->read_monorepo($path);
+        if ($monorepo === null) {
             return Command::FAILURE;
         }
-        if ($found === null) {
-            return Command::FAILURE;
-        }
+        $found = $this->split_repositories($monorepo, $monorepo->name, $input->getOption('filter'));
         if (count($found) === 0) {
             $output->writeln('<error>No packages found!</error>');
 
             return Command::FAILURE;
         }
-        if (!$this->includes_branch_tip($path)) {
+        if (!$this->includes_branch_tip($path, $monorepo)) {
             return Command::FAILURE;
         }
         $entries = [];
         foreach ($found as $repository) {
             $entry = new PrepEntry($repository);
-            $this->read_composer($entry, $path);
+            [$entry->package, $entry->composer] = $this->split_composer($path, $entry->repository);
             $entries[] = $entry;
         }
         $unknown = array_diff(array_keys($overrides), $this->known_names($entries));
@@ -271,18 +263,10 @@ class ReleasePrepCommand extends AbstractReleaseCommand
      *
      * @return bool false when the prep should stop, having said why
      */
-    private function includes_branch_tip(string $path): bool
+    private function includes_branch_tip(string $path, MonorepoCheckout $monorepo): bool
     {
-        $name = $this->root_package_name($path);
-        $upstream = array_search($name, self::ROOT_PACKAGES, true);
-        if ($upstream === false) {
-            $this->output->writeln(sprintf(
-                '<error>%s is not a checkout of %s: its composer.json is named "%s"</error>',
-                $path,
-                implode(' or ', array_keys(self::ROOT_PACKAGES)),
-                $name,
-            ));
-
+        $upstream = $this->upstream($path, $monorepo);
+        if ($upstream === null) {
             return false;
         }
 
@@ -354,20 +338,6 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         }
 
         return $names;
-    }
-
-    /**
-     * Fill in the package name and composer.json of the split. The name is not always derivable from
-     * the name of the repository it is split to, so it falls back to that guess only when there is no
-     * composer.json.
-     */
-    private function read_composer(PrepEntry $entry, string $path): void
-    {
-        $file = Path::contained($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
-        $json = $file !== null && is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
-        $entry->composer = is_array($json) ? $json : [];
-        $name = $entry->composer['name'] ?? null;
-        $entry->package = is_string($name) ? $name : "open-telemetry/{$entry->repository->downstream->project}";
     }
 
     /**
