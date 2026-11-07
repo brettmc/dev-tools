@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
-use Http\Discovery\Psr18ClientDiscovery;
+use OpenTelemetry\DevTools\Console\Release\GitHubException;
 use OpenTelemetry\DevTools\Console\Release\Project;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use Symfony\Component\Console\Command\Command;
@@ -30,9 +30,6 @@ class PeclTagCommand extends AbstractReleaseCommand
         ;
     }
 
-    /**
-     * @psalm-suppress PossiblyNullPropertyFetch
-     */
     #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
@@ -42,18 +39,23 @@ class PeclTagCommand extends AbstractReleaseCommand
 
             return Command::FAILURE;
         }
-        $branch = $input->getOption('branch');
+        $this->source_branch = $input->getOption('branch');
         $this->dry_run = $input->getOption('dry-run');
-        $this->client = Psr18ClientDiscovery::find();
         $this->registerInputAndOutput($input, $output);
         $project = new Project(self::REPOSITORY);
         $repository = new Repository();
         $repository->downstream = $project;
         $repository->upstream = $project;
 
-        $sha = $this->get_sha_for_branch($repository, $branch);
-        $repository->latestRelease = $this->get_latest_release($repository);
-        $prev = $repository->latestRelease->version;
+        try {
+            $sha = $this->branch_tip(self::REPOSITORY);
+            $repository->latestRelease = $this->get_latest_release($repository);
+        } catch (GitHubException $e) {
+            $this->output->writeln("<error>{$e->getMessage()}</error>");
+
+            return Command::FAILURE;
+        }
+        $prev = $repository->latestRelease->version ?? '-nothing-';
 
         $question = new Question("<question>Latest={$prev}, enter new tag (blank to skip):</question>", null);
 
@@ -64,60 +66,37 @@ class PeclTagCommand extends AbstractReleaseCommand
 
             return Command::SUCCESS;
         }
-        $this->output->writeln("[INFO] Creating tag {$newVersion} from branch {$branch}");
-        $this->create_tag($repository, $sha, $newVersion, "Tagging {$newVersion}");
+        $this->output->writeln("[INFO] Creating tag {$newVersion} from branch {$this->source_branch}");
 
-        return Command::SUCCESS;
+        return $this->create_tag($sha, $newVersion, "Tagging {$newVersion}") ? Command::SUCCESS : Command::FAILURE;
     }
 
     /**
-     * Create an annotated tag
+     * Create an annotated tag: the tag object, then the ref that makes it a tag of the repository.
+     *
+     * @return bool false when either failed, having said why
      */
-    protected function create_tag(Repository $repository, string $sha, string $tag, string $message): void
+    private function create_tag(string $sha, string $tag, string $message): bool
     {
-        $url = "https://api.github.com/repos/{$repository->upstream}/git/tags";
-        $body = json_encode([
-            'tag' => $tag,
-            'message' => $message,
-            'object' => $sha,
-            'type' => 'commit',
-        ], JSON_UNESCAPED_SLASHES);
+        $api = 'https://api.github.com/repos/' . self::REPOSITORY;
         if ($this->dry_run) {
-            $this->output->writeln("[DRY-RUN] POST {$url}");
+            $this->output->writeln("[DRY-RUN] POST {$api}/git/tags");
+            $this->output->writeln("[DRY-RUN] POST {$api}/git/refs refs/tags/{$tag}");
 
-            return;
+            return true;
         }
-        $response = $this->post($url, $body);
-        if ($response->getStatusCode() !== 201) {
-            $this->output->writeln("<error>[ERROR] ({$response->getStatusCode()}) {$response->getBody()->getContents()}</error>");
-            $this->output->writeln('[HELP] X-Accepted-GitHub-Permissions: ' . $response->getHeaderLine('X-Accepted-GitHub-Permissions'));
 
-            return;
+        try {
+            $object = $this->github->createTag(self::REPOSITORY, $tag, $message, $sha);
+            $this->output->writeln('<info>[CREATED] ' . self::REPOSITORY . " tag object {$tag}: </info> {$object['url']}");
+            $ref = $this->github->createRef(self::REPOSITORY, "refs/tags/{$tag}", $object['sha']);
+        } catch (GitHubException $e) {
+            $this->output->writeln("<error>[ERROR] {$e->getMessage()}</error>");
+
+            return false;
         }
-        $json = json_decode($response->getBody()->getContents());
-        $this->output->writeln("<info>[CREATED] {$repository->upstream} $tag: </info> {$json->url}");
+        $this->output->writeln('<info>[CREATED] ' . self::REPOSITORY . " {$tag}: </info> {$ref}");
 
-        $this->create_reference($repository, $json->sha, $json->tag);
-    }
-
-    protected function create_reference(Repository $repository, string $sha, string $tag): void
-    {
-        $url = "https://api.github.com/repos/{$repository->upstream}/git/refs";
-        $body = json_encode([
-            'ref' => "refs/tags/{$tag}",
-            'sha' => $sha,
-        ], JSON_UNESCAPED_SLASHES);
-        if ($this->dry_run) {
-            $this->output->writeln("[DRY-RUN] POST {$url} {$body}");
-
-            return;
-        }
-        $response = $this->post($url, $body);
-        if ($response->getStatusCode() !== 201) {
-            $this->output->writeln("<error>[ERROR] ({$response->getStatusCode()}) {$response->getBody()->getContents()}</error>");
-        } else {
-            $json = json_decode($response->getBody()->getContents());
-            $this->output->writeln("<info>[CREATED] {$repository->upstream} $tag: </info> {$json->url}");
-        }
+        return true;
     }
 }

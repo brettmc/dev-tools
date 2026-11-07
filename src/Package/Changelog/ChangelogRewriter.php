@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Package\Changelog;
 
-use InvalidArgumentException;
-
 /**
  * Prepares a changelog for tagging. Only the Unreleased heading line changes, so the rest of the
  * file, including its link definitions, is left as it was.
@@ -13,21 +11,24 @@ use InvalidArgumentException;
 final class ChangelogRewriter
 {
     /**
-     * @throws InvalidArgumentException when there is no Unreleased section
+     * @throws ChangelogException when there is no Unreleased section
      */
     public function release(string $markdown, string $version, string $date): string
     {
-        $result = preg_replace_callback(
-            '/^## Unreleased[ \t]*(\r?\n)/mi',
-            static fn (array $m): string => "## Unreleased{$m[1]}{$m[1]}## {$version} - {$date}{$m[1]}",
-            $markdown,
-            1,
-            $count
-        );
-        if ($result === null || $count === 0) {
-            throw new InvalidArgumentException('No "## Unreleased" section found');
+        // Odd indexes hold the line endings, so the file can be put back together byte for byte.
+        $parts = preg_split('/(\r\n|\n|\r)/', $markdown, -1, PREG_SPLIT_DELIM_CAPTURE) ?: [];
+        $fences = new CodeFences();
+        for ($i = 0; $i < count($parts); $i += 2) {
+            if ($fences->read($parts[$i], intdiv($i, 2) + 1)
+                || preg_match('/^## Unreleased[ \t]*$/i', $parts[$i]) !== 1) {
+                continue;
+            }
+            $eol = $parts[$i + 1] ?? "\n";
+            $parts[$i] = "## Unreleased{$eol}{$eol}## {$version} - {$date}";
+
+            return implode('', $parts);
         }
 
-        return $result;
+        throw new ChangelogException('No "## Unreleased" section found');
     }
 }

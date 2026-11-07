@@ -4,9 +4,8 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Package\Spi;
 
-use Composer\Semver\Constraint\Constraint;
-use Composer\Semver\Constraint\ConstraintInterface;
 use Composer\Semver\VersionParser;
+use OpenTelemetry\DevTools\Package\Composer\VersionMatcher;
 use UnexpectedValueException;
 
 /**
@@ -66,24 +65,15 @@ final class SplitDependencyChecker
         $problems = [];
         if ($alias === null) {
             $problems[] = 'no dev-main alias';
-        } elseif (!$this->satisfies($parsed, $alias)) {
+        } elseif (!VersionMatcher::matches($parsed, $alias)) {
             $problems[] = "dev-main alias {$alias} does not satisfy {$constraint}";
         }
         if ($replace === null) {
             $problems[] = 'not in root replace';
-        } elseif (!$this->satisfies($parsed, $replace)) {
+        } elseif (!VersionMatcher::matches($parsed, $replace)) {
             $problems[] = "root replace {$replace} does not satisfy {$constraint}";
         }
 
         return $problems;
-    }
-
-    private function satisfies(ConstraintInterface $constraint, string $version): bool
-    {
-        try {
-            return $constraint->matches(new Constraint('==', $this->parser->normalize($version)));
-        } catch (UnexpectedValueException) {
-            return false;
-        }
     }
 }
