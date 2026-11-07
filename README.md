@@ -337,7 +337,6 @@ bin/otel release:run --path=../opentelemetry-php --dry-run
 | `--sha` | Monorepo commit to release, which must be on `--branch` (default: the tip of `--branch`) |
 | `--repo` | `core` or `contrib` (default: the one `--path` is a checkout of) |
 | `--filter` | Only packages whose prefix matches |
-| `--force` | Also release packages with no changes. Interactive only. |
 | `--dry-run` | Make no changes |
 | `--format` | `text` (default) or `json` |
 | `-n`, `--no-interaction` | Release without asking |
@@ -384,8 +383,7 @@ shallow clone unless told not to:
 gitsplit rewrites every commit it pushes to a split repository, so the split commit to tag is found by
 content. For each package with changes, the run reads the tree of the package's directory in the
 commit being released. Then it walks the split's `--branch` history, back to the latest release, for
-the commit with the same tree. That commit is tagged. With `--force`, the walk includes the latest
-release, as a package without changes has its tree.
+the commit with the same tree. That commit is tagged.
 
 The same tree means the split's `CHANGELOG.md` is the checkout's. The run also checks that the
 split's commits since its latest release match the monorepo's, so nothing is released that was pushed
@@ -420,7 +418,6 @@ With `--no-interaction`, nothing is asked and nothing unexpected is let through:
 - A package with changes but no `CHANGELOG.md` stops the run before anything is tagged.
 - Commits in a split that are not upstream stop the run before anything is tagged, as does a failed
   compare with the split.
-- `--force` is refused, as it needs someone to choose the versions.
 - A `--branch` other than `main` is refused before any GitHub call. A backport must not take the
   latest badge, and its versions are checked against each split's latest release, which is main's.
   Run it interactively.

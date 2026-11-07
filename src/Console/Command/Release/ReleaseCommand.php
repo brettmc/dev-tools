@@ -33,7 +33,6 @@ use Symfony\Component\Console\Question\Question;
 class ReleaseCommand extends AbstractReleaseCommand
 {
     private const CHANGELOG_FILE = 'CHANGELOG.md';
-    private bool $force;
     /**
      * @var array<string> packages released by this run
      */
@@ -70,7 +69,6 @@ class ReleaseCommand extends AbstractReleaseCommand
             ->addOption('branch', null, InputOption::VALUE_OPTIONAL, 'branch to tag off (default: main)')
             ->addOption('repo', ['r'], InputOption::VALUE_OPTIONAL, 'repo to handle (core, contrib; default: that of --path)')
             ->addOption('filter', null, InputOption::VALUE_OPTIONAL, 'filter by repository prefix')
-            ->addOption('force', ['f'], InputOption::VALUE_NONE, 'force new releases even if no changes')
             ->addOption('path', null, InputOption::VALUE_REQUIRED, 'checkout of the monorepo being released, at the commit being tagged (required)')
             ->addOption('sha', null, InputOption::VALUE_REQUIRED, 'monorepo commit to release, which must be on --branch (default: the tip of --branch)')
             ->addOption('format', null, InputOption::VALUE_REQUIRED, 'text, or json on stdout with the rest on stderr', 'text')
@@ -118,12 +116,6 @@ class ReleaseCommand extends AbstractReleaseCommand
             return Command::FAILURE;
         }
         $this->source_branch = $input->getOption('branch') ?? 'main';
-        $this->force = $input->getOption('force');
-        if ($this->force && !$input->isInteractive()) {
-            $output->writeln('<error>--force releases packages with no changes, which needs someone to choose the versions; run it interactively</error>');
-
-            return Command::FAILURE;
-        }
         if ($this->source_branch !== 'main' && !$input->isInteractive()) {
             //the version is checked against each split's latest release, which is main's
             $output->writeln("<error>--no-interaction releases only from main, as each package's latest release is main's. Run --branch={$this->source_branch} interactively.</error>");
@@ -225,7 +217,7 @@ class ReleaseCommand extends AbstractReleaseCommand
      */
     private function to_be_released(Repository $repository): bool
     {
-        if ($repository->commits === [] && !$this->force) {
+        if ($repository->commits === []) {
             return false;
         }
 
@@ -428,8 +420,6 @@ class ReleaseCommand extends AbstractReleaseCommand
      * which is the one to tag. gitsplit rewrites every commit, so the trees are what match.
      *
      * The split's history is walked newest first back to its latest release, which bounds the walk.
-     * With --force the walk goes past the latest release, as an unchanged package has the tree of
-     * the commit released, so it stops at the first match instead.
      *
      * @return bool false when the run should stop, having said why
      */
@@ -447,7 +437,7 @@ class ReleaseCommand extends AbstractReleaseCommand
             return !$this->problem("{$this->sha} has no {$prefix}, but .gitsplit.yml splits it");
         }
 
-        $since = $repository->latestRelease !== null && !$this->force ? $this->since($repository->latestRelease) : null;
+        $since = $repository->latestRelease !== null ? $this->since($repository->latestRelease) : null;
 
         try {
             foreach ($this->github->commits((string) $repository->downstream, $this->source_branch, $since) as $commit) {
@@ -611,7 +601,7 @@ class ReleaseCommand extends AbstractReleaseCommand
     private function publish_repositories(array $repositories): bool
     {
         foreach ($repositories as $repo) {
-            if (count($repo->commits) === 0 && !$this->force) {
+            if (count($repo->commits) === 0) {
                 $this->output->isVerbose() && $this->output->writeln("<info>[SKIP] {$repo->downstream} (no new commits)</info>");
 
                 continue;

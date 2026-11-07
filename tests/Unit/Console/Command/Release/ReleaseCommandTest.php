@@ -16,6 +16,7 @@ use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestInterface;
 use RuntimeException;
+use Symfony\Component\Console\Exception\InvalidOptionException;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\ConsoleOutput;
 use Symfony\Component\Console\Output\StreamOutput;
@@ -203,17 +204,6 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame([], preg_grep('#/sem-conv/compare/#', array_column($this->requests, 'url')));
     }
 
-    public function test_force_tags_the_released_commit_of_an_unchanged_package(): void
-    {
-        $this->upstreamCommits = false;
-        $this->splitMessages = [];
-
-        $status = $this->run_release("1.45.0\nn\nn\n", ['--force' => true]);
-
-        $this->assertSame(0, $status);
-        $this->assertSame('sem-conv-released', $this->created()['target_commitish']);
-    }
-
     public function test_no_interaction_skips_and_names_a_package_without_a_new_dated_section(): void
     {
         $this->latestTag = '1.45.0';
@@ -253,13 +243,12 @@ class ReleaseCommandTest extends TestCase
         $this->assertStringContainsString('[DRY-RUN] https://api.github.com/repos/opentelemetry-php/sem-conv/releases', $this->output());
     }
 
-    public function test_force_is_refused_without_interaction(): void
+    public function test_there_is_no_force_option(): void
     {
-        $status = $this->run_release('', ['--force' => true], false);
+        $this->expectException(InvalidOptionException::class);
+        $this->expectExceptionMessage('"--force" option does not exist');
 
-        $this->assertSame(1, $status);
-        $this->assertSame([], $this->requests);
-        $this->assertStringContainsString('--force', $this->output());
+        $this->run_release('', ['--force' => true]);
     }
 
     public function test_failed_release_stops_the_run_without_interaction(): void
