@@ -13,7 +13,6 @@ use OpenTelemetry\DevTools\Package\Composer\ConfigResolverInterface;
 use OpenTelemetry\DevTools\Util\WorkingDirectoryResolver;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputInterface;
-use Symfony\Component\Console\Output\ConsoleOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
 
@@ -90,9 +89,7 @@ class ValidatePackagesCommand extends BaseCommand
             new ArrayInput([
                 'file' => $composerFile,
             ]),
-            new ConsoleOutput(
-                OutputInterface::VERBOSITY_DEBUG
-            ),
+            $this->getOutput(),
             $directory,
         );
     }

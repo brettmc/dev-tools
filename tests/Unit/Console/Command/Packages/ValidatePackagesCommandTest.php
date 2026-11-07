@@ -88,6 +88,44 @@ class ValidatePackagesCommandTest extends TestCase
         );
     }
 
+    public function test_execute_invalid_shows_why(): void
+    {
+        $paths = (static function () {
+            yield self::DIRECTORY => self::INVALID_COMPOSER_FILE;
+        })();
+
+        $commandTester = new CommandTester(
+            $this->createValidatePackagesCommand(
+                $paths
+            )
+        );
+        $commandTester->execute([]);
+
+        $this->assertStringContainsString(
+            'The property description is required',
+            $commandTester->getDisplay()
+        );
+    }
+
+    public function test_execute_invalid_formats_composer_styles(): void
+    {
+        $paths = (static function () {
+            yield self::DIRECTORY => self::INVALID_COMPOSER_FILE;
+        })();
+
+        $commandTester = new CommandTester(
+            $this->createValidatePackagesCommand(
+                $paths
+            )
+        );
+        $commandTester->execute([]);
+
+        $this->assertStringNotContainsString(
+            '<warning>',
+            $commandTester->getDisplay()
+        );
+    }
+
     public function test_execute_broken(): void
     {
         $paths = (static function () {
