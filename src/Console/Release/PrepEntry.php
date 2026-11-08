@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Release;
 
+use OpenTelemetry\DevTools\Package\Changelog\ChangelogLinks;
 use OpenTelemetry\DevTools\Package\Changelog\UnreleasedChanges;
 
 /**
@@ -14,6 +15,8 @@ class PrepEntry
     public ?string $latest = null;
     public ?string $file = null;
     public ?UnreleasedChanges $changes = null;
+    /** the link definitions of its CHANGELOG.md, to resolve references in $changes */
+    public ?ChangelogLinks $links = null;
     /** the package name, from its composer.json */
     public string $package = '';
     /** @var array<string, mixed> its decoded composer.json, empty when there is none */

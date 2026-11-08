@@ -32,6 +32,7 @@ PECL.
   - [Tag order and constraint warnings](#tag-order-and-constraint-warnings)
   - [Packages versioned from a file](#packages-versioned-from-a-file)
   - [Read the suggestions as JSON](#read-the-suggestions-as-json)
+  - [Render a release dashboard issue](#render-a-release-dashboard-issue)
 - [Tag a release](#tag-a-release)
   - [Prepare the checkout](#prepare-the-checkout)
   - [How the split commit is found](#how-the-split-commit-is-found)
@@ -219,7 +220,7 @@ vendor/bin/otel release:prep --set=open-telemetry/sdk=2.0.0
 | `--dry-run` | Report the suggestions without writing anything |
 | `--date` | Release date as `YYYY-MM-DD` (default: today) |
 | `--set=<package>=<version\|skip>` | Release a package as this version, or not at all, without prompting. Repeatable. The package is the composer name or the split repository name. |
-| `--format` | `text` (default), `markdown` for a pull request description, or `json` |
+| `--format` | `text` (default), `markdown` for a pull request description, `json`, or `dashboard` for an issue body |
 | `-n`, `--no-interaction` | Accept every suggestion without prompting |
 
 For each package with a `CHANGELOG.md`, it prints the latest release, the suggestion and the reason,
@@ -301,9 +302,9 @@ errors go to stderr. The object is printed however the prep ends.
 ```json
 {
     "packages": [
-        {"package": "open-telemetry/api", "repository": "opentelemetry-php/api", "latest": "1.10.1", "version": "1.11.0", "reason": "new features", "warnings": [], "undecided": false},
-        {"package": "open-telemetry/sdk", "repository": "opentelemetry-php/sdk", "latest": "1.15.0", "version": "1.16.0", "reason": "breaking changes recorded", "warnings": ["Dropped X."], "undecided": false},
-        {"package": "open-telemetry/context", "repository": "opentelemetry-php/context", "latest": "1.4.0", "version": null, "reason": "no unreleased changes", "warnings": [], "undecided": false}
+        {"package": "open-telemetry/api", "repository": "opentelemetry-php/api", "latest": "1.10.1", "version": "1.11.0", "reason": "new features", "warnings": [], "undecided": false, "changes": {"Added": ["A new thing ([#12])."]}},
+        {"package": "open-telemetry/sdk", "repository": "opentelemetry-php/sdk", "latest": "1.15.0", "version": "1.16.0", "reason": "breaking changes recorded", "warnings": ["Dropped X."], "undecided": false, "changes": {"Breaking changes": ["Dropped X."], "Fixed": ["A bug."]}},
+        {"package": "open-telemetry/context", "repository": "opentelemetry-php/context", "latest": "1.4.0", "version": null, "reason": "no unreleased changes", "warnings": [], "undecided": false, "changes": {}}
     ],
     "order": ["open-telemetry/api", "open-telemetry/sdk"],
     "constraint_warnings": [],
@@ -315,12 +316,41 @@ errors go to stderr. The object is printed however the prep ends.
 - `version` is null for a package that is not released.
 - `undecided` is true for a package with changes that got no suggestion and no version. Without
   interaction it is not released, and the run still succeeds, so check for it before tagging.
+- `changes` holds the Unreleased entries by section, breaking changes first, as written in the
+  changelog. It is empty for a package with no entries or no `CHANGELOG.md`.
 - `release` is true when anything is to be released.
 - `completed` is false, and the exit status non-zero, when the prep failed. The reason is on stderr.
   `packages` and `order` are empty if it failed before the packages were assessed.
 
 ```shell
 vendor/bin/otel release:prep -n --dry-run --format=json | jq '[.packages[].warnings[]] | length'
+```
+
+### Render a release dashboard issue
+
+A pinned issue can show what the next release would hold, kept current by a workflow on each push to
+the branch. `--format=dashboard` prints its body in markdown. It needs `--dry-run`, as it reports what
+would be released rather than preparing it.
+
+The body has:
+
+- a table of the packages with changes: latest release, next version and a count of entries per section
+- the tag order, and the packages with no changes or no `CHANGELOG.md`
+- each package warning, such as a breaking entry, cut to its first sentence
+- the constraint warnings, and the packages with no suggestion
+- each package's entries, collapsed under `<details>`
+
+References such as `[#12]` are made inline links, since the definitions at the foot of the changelog
+don't come with the entries. A pull request or issue of the monorepo becomes a bare `#12`, which
+GitHub links itself in that repository. If the body would be over the 65,536 characters an issue
+holds, the entries are left out.
+
+stdout holds the body and nothing else, and nothing at all when the prep fails. So a workflow can
+replace the issue body only when the command succeeds, and never with a partial one.
+
+```shell
+vendor/bin/otel release:prep -n --dry-run --format=dashboard > body.md
+gh issue edit "$ISSUE" --body-file body.md
 ```
 
 ## Tag a release

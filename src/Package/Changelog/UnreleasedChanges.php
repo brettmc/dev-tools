@@ -21,6 +21,22 @@ final class UnreleasedChanges
         return $this->entries[$section->value] ?? [];
     }
 
+    /**
+     * @return array<string, list<string>> entries keyed by ChangelogSection value, in the order of
+     *         ChangelogSection, so breaking changes come first whatever order the file has
+     */
+    public function all(): array
+    {
+        $all = [];
+        foreach (ChangelogSection::cases() as $section) {
+            if (($this->entries[$section->value] ?? []) !== []) {
+                $all[$section->value] = $this->entries[$section->value];
+            }
+        }
+
+        return $all;
+    }
+
     public function isEmpty(): bool
     {
         return $this->entries === [];

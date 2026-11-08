@@ -41,6 +41,8 @@ class ReleasePrepCommandTest extends TestCase
     private array $requests = [];
     /** tip of the upstream branch on GitHub, null for a failed lookup */
     private ?string $tip = 'abc123';
+    /** HEAD of the checkout */
+    private string $head = 'abc123';
     /** status of the latest release lookups */
     private int $latestStatus = 200;
     private bool $tipIsLocal = true;
@@ -429,9 +431,9 @@ class ReleasePrepCommandTest extends TestCase
 
         $this->assertSame([
             'packages' => [
-                ['package' => 'open-telemetry/api', 'repository' => 'opentelemetry-php/api', 'latest' => '1.10.1', 'version' => '1.11.0', 'reason' => 'new features', 'warnings' => [], 'undecided' => false],
-                ['package' => 'open-telemetry/sdk', 'repository' => 'opentelemetry-php/sdk', 'latest' => '1.15.0', 'version' => '1.16.0', 'reason' => 'breaking changes recorded', 'warnings' => ['Dropped X.'], 'undecided' => false],
-                ['package' => 'open-telemetry/context', 'repository' => 'opentelemetry-php/context', 'latest' => '1.4.0', 'version' => null, 'reason' => 'no unreleased changes', 'warnings' => [], 'undecided' => false],
+                ['package' => 'open-telemetry/api', 'repository' => 'opentelemetry-php/api', 'latest' => '1.10.1', 'version' => '1.11.0', 'reason' => 'new features', 'warnings' => [], 'undecided' => false, 'changes' => ['Added' => ['A feature.']]],
+                ['package' => 'open-telemetry/sdk', 'repository' => 'opentelemetry-php/sdk', 'latest' => '1.15.0', 'version' => '1.16.0', 'reason' => 'breaking changes recorded', 'warnings' => ['Dropped X.'], 'undecided' => false, 'changes' => ['Breaking changes' => ['Dropped X.']]],
+                ['package' => 'open-telemetry/context', 'repository' => 'opentelemetry-php/context', 'latest' => '1.4.0', 'version' => null, 'reason' => 'no unreleased changes', 'warnings' => [], 'undecided' => false, 'changes' => []],
             ],
             'order' => ['open-telemetry/api', 'open-telemetry/sdk'],
             'constraint_warnings' => [],
@@ -439,6 +441,21 @@ class ReleasePrepCommandTest extends TestCase
             'completed' => true,
         ], json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR));
         $this->assertStringContainsString('[DRY-RUN] no files were changed', $this->tester->getErrorOutput());
+    }
+
+    public function test_json_format_lists_changes_in_section_order_and_as_an_object_when_empty(): void
+    {
+        $this->monorepo([
+            'src/API' => ['api', "# Changelog\n\n## Unreleased\n\n### Fixed\n\n- A bug.\n- Another.\n\n### Added\n\n- A feature.\n"],
+            'src/Context' => ['context', self::EMPTY],
+        ]);
+        $this->releases['context'] = '1.4.0';
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'json'], ['capture_stderr_separately' => true]));
+
+        $this->assertStringContainsString('"changes": {}', $this->tester->getDisplay());
+        $json = json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(['Added' => ['A feature.'], 'Fixed' => ['A bug.', 'Another.']], $json['packages'][0]['changes']);
     }
 
     public function test_json_format_with_nothing_to_release(): void
@@ -525,12 +542,72 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('releases/latest: 500', $this->tester->getErrorOutput());
     }
 
+    public function test_dashboard_format_prints_only_the_issue_body_on_stdout(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED . "\n[#7]: https://github.com/open-telemetry/opentelemetry-php/pull/7\n"], 'src/Context' => ['context', self::EMPTY]]);
+        file_put_contents($this->root->url() . '/src/API/CHANGELOG.md', str_replace('- A bug.', '- A bug ([#7]).', $this->changelog('src/API')));
+        $this->releases['context'] = '1.4.0';
+        $this->head = 'def456';
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'dashboard'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $body = $this->tester->getDisplay();
+        $this->assertStringStartsWith("1 package would be released from `main` at def456.\n\n| Package | Latest | Next | Changes |", $body);
+        $this->assertStringContainsString('| api | 1.10.1 | 1.10.2 | 1 fixed |', $body);
+        $this->assertStringContainsString('No changes: context.', $body);
+        $this->assertStringContainsString("<details><summary>api 1.10.2</summary>\n\n#### Fixed\n\n- A bug (#7).\n\n</details>\n", $body);
+        $this->assertStringContainsString('[DRY-RUN] no files were changed', $this->tester->getErrorOutput());
+    }
+
+    public function test_dashboard_format_links_contrib_references_to_contrib(): void
+    {
+        $this->monorepo(['src/Logs/Monolog' => ['contrib-logger-monolog', "# Changelog\n\n## Unreleased\n\n### Fixed\n\n- A bug ([#7]).\n\n[#7]: https://github.com/open-telemetry/opentelemetry-php-contrib/pull/7\n"]]);
+        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry-php-contrib"}');
+        $this->releases = ['contrib-logger-monolog' => '1.0.0'];
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'dashboard'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertStringContainsString('- A bug (#7).', $this->tester->getDisplay());
+    }
+
+    public function test_dashboard_format_prints_nothing_on_stdout_when_the_prep_fails(): void
+    {
+        $this->monorepo(['src/API' => ['api', "# Changelog\n\n## Unreleased\n\n### Housekeeping\n\n- Tidied.\n"]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--dry-run' => true, '--format' => 'dashboard'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertSame('', $this->tester->getDisplay());
+        $this->assertStringContainsString('Housekeeping', $this->tester->getErrorOutput());
+    }
+
+    public function test_dashboard_format_prints_nothing_on_stdout_when_the_prep_crashes(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+        $this->readError = new \TypeError('Cannot assign null to property');
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--dry-run' => true, '--format' => 'dashboard'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertSame('', $this->tester->getDisplay());
+        $this->assertStringContainsString('Cannot assign null to property', $this->tester->getErrorOutput());
+    }
+
+    public function test_dashboard_format_needs_dry_run(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'dashboard'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertSame('', $this->tester->getDisplay());
+        $this->assertStringContainsString('--format=dashboard needs --dry-run', $this->tester->getErrorOutput());
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
     public function test_unknown_format_fails(): void
     {
         $this->monorepo(['src/API' => ['api', self::FIXED]]);
 
         $this->assertSame(Command::FAILURE, $this->prep(['--format' => 'yaml'], ['interactive' => false]));
-        $this->assertStringContainsString('--format must be text, markdown or json', $this->tester->getDisplay());
+        $this->assertStringContainsString('--format must be text, markdown, json or dashboard', $this->tester->getDisplay());
     }
 
     public function test_nested_bullets_in_a_warning_stay_nested(): void
@@ -899,6 +976,7 @@ class ReleasePrepCommandTest extends TestCase
             return $this->tipIsAncestor;
         });
         $git->method('changes')->willReturnCallback(fn (): array => $this->changes);
+        $git->method('head')->willReturnCallback(fn (): string => $this->head);
         $this->tester = new CommandTester(new ReleasePrepCommand(new GitHub($client), $reader, $git));
         $inputs = $options['inputs'] ?? [];
         unset($options['inputs']);
