@@ -226,13 +226,16 @@ vendor/bin/otel release:prep --set=open-telemetry/sdk=2.0.0
 For each package with a `CHANGELOG.md`, it prints the latest release, the suggestion and the reason,
 and lists any breaking entries. Then it asks for the version: blank accepts the suggestion, `skip`
 skips, and a typed version overrides it. A forced major warns when Unreleased records no breaking
-changes.
+changes. With `--format=markdown`, references such as `[#12]` in those entries are made links, as
+for the dashboard below.
 
 A package with changes gets no suggestion when its latest tag is a pre-release or can't be parsed.
 These are listed after the table. Choose a version at the prompt or with `--set`.
 
 The checkout needs `composer install` even for `--dry-run`, as the `#[PackageDependency]` attributes
-are read through its autoloader. Only the latest-release lookups go to GitHub.
+are read through its autoloader. A checkout whose root `composer.json` has no `extra.spi`, such as
+contrib, has no attributes to read, so it needs no install. Only the latest-release lookups go to
+GitHub.
 
 ### Start from an up-to-date checkout
 
@@ -334,7 +337,9 @@ would be released rather than preparing it.
 
 The body has:
 
-- a table of the packages with changes: latest release, next version and a count of entries per section
+- a table of the packages with changes: latest release, next version and a count of entries per
+  section. Each package links to its `CHANGELOG.md` at the commit, and each latest release to its
+  GitHub release.
 - the tag order, and the packages with no changes or no `CHANGELOG.md`
 - each package warning, such as a breaking entry, cut to its first sentence
 - the constraint warnings, and the packages with no suggestion

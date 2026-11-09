@@ -69,9 +69,12 @@ final class Dashboard
             $rows = ['| Package | Latest | Next | Changes |', '|---|---|---|---|'];
             foreach ($changed as $entry) {
                 $rows[] = sprintf(
-                    '| %s | %s | %s | %s |',
+                    '| [%s](https://github.com/%s/blob/%s/%s/CHANGELOG.md) | %s | %s | %s |',
                     $this->name($entry),
-                    $entry->latest ?? 'none',
+                    $this->repository,
+                    $this->sha,
+                    $entry->repository->upstream->path,
+                    $entry->latest === null ? 'none' : "[{$entry->latest}](https://github.com/{$entry->repository->downstream}/releases/tag/{$entry->latest})",
                     $entry->version ?? $entry->reason,
                     $this->counts($entry) ?? $entry->reason,
                 );

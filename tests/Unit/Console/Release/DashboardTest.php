@@ -34,8 +34,8 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString(<<<'MD'
             | Package | Latest | Next | Changes |
             |---|---|---|---|
-            | sdk | 1.16.1 | 1.17.0 | 1 breaking, 2 added, 1 fixed |
-            | api | 1.11.0 | 1.11.1 | 1 fixed |
+            | [sdk](https://github.com/open-telemetry/opentelemetry-php/blob/841cc9a1b2c3d4e5f60718293a4b5c6d7e8f9012/src/sdk/CHANGELOG.md) | [1.16.1](https://github.com/opentelemetry-php/sdk/releases/tag/1.16.1) | 1.17.0 | 1 breaking, 2 added, 1 fixed |
+            | [api](https://github.com/open-telemetry/opentelemetry-php/blob/841cc9a1b2c3d4e5f60718293a4b5c6d7e8f9012/src/api/CHANGELOG.md) | [1.11.0](https://github.com/opentelemetry-php/api/releases/tag/1.11.0) | 1.11.1 | 1 fixed |
 
             Tag order: api, sdk.
 
@@ -66,8 +66,8 @@ class DashboardTest extends TestCase
             $this->entry('sem-conv', '1.37.0', '1.38.0', [], 'version source is newer than the latest release'),
         ]);
 
-        $this->assertStringContainsString('| sdk | none | skipped, no release to base a version on | 1 added |', $body);
-        $this->assertStringContainsString('| sem-conv | 1.37.0 | 1.38.0 | version source is newer than the latest release |', $body);
+        $this->assertStringContainsString('| [sdk](https://github.com/open-telemetry/opentelemetry-php/blob/841cc9a1b2c3d4e5f60718293a4b5c6d7e8f9012/src/sdk/CHANGELOG.md) | none | skipped, no release to base a version on | 1 added |', $body);
+        $this->assertStringContainsString('| [sem-conv](https://github.com/open-telemetry/opentelemetry-php/blob/841cc9a1b2c3d4e5f60718293a4b5c6d7e8f9012/src/sem-conv/CHANGELOG.md) | [1.37.0](https://github.com/opentelemetry-php/sem-conv/releases/tag/1.37.0) | 1.38.0 | version source is newer than the latest release |', $body);
     }
 
     public function test_package_without_a_changelog_is_listed_apart(): void
@@ -163,7 +163,7 @@ class DashboardTest extends TestCase
         $this->assertLessThanOrEqual(Dashboard::LIMIT, strlen($body));
         $this->assertStringNotContainsString('<details>', $body);
         $this->assertStringContainsString("The entries are left out, as they would make this too long for an issue.\n", $body);
-        $this->assertStringContainsString('| sdk | 1.0.0 | 1.1.0 | 1 added |', $body);
+        $this->assertStringContainsString('| [sdk](https://github.com/open-telemetry/opentelemetry-php/blob/841cc9a1b2c3d4e5f60718293a4b5c6d7e8f9012/src/sdk/CHANGELOG.md) | [1.0.0](https://github.com/opentelemetry-php/sdk/releases/tag/1.0.0) | 1.1.0 | 1 added |', $body);
     }
 
     /**
@@ -182,6 +182,7 @@ class DashboardTest extends TestCase
     {
         $repository = new Repository();
         $repository->upstream = new Project('open-telemetry/opentelemetry-php');
+        $repository->upstream->path = "src/{$project}";
         $repository->downstream = new Project("opentelemetry-php/{$project}");
         $entry = new PrepEntry($repository);
         $entry->package = "open-telemetry/{$project}";

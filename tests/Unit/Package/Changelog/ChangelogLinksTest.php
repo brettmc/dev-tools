@@ -52,6 +52,16 @@ MD;
         );
     }
 
+    public function test_pull_request_of_this_repository_under_another_label_is_inlined(): void
+    {
+        $changelog = self::CHANGELOG . "\n[the fix]: https://github.com/open-telemetry/opentelemetry-php/pull/12\n[#99]: https://github.com/open-telemetry/opentelemetry-php/pull/12\n";
+
+        $this->assertSame(
+            'See [the fix](https://github.com/open-telemetry/opentelemetry-php/pull/12) and [#99](https://github.com/open-telemetry/opentelemetry-php/pull/12).',
+            $this->inline('See [the fix] and [#99].', $changelog)
+        );
+    }
+
     public function test_other_reference_is_inlined(): void
     {
         $this->assertSame(

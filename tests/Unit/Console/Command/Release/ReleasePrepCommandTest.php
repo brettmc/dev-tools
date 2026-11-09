@@ -420,6 +420,26 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('- Dropped X.', $display);
     }
 
+    public function test_markdown_format_resolves_references_in_warnings(): void
+    {
+        $this->monorepo(['src/API' => ['api', str_replace('- Dropped X.', '- Dropped X ([#7], [GHSA-1]).', self::BREAKING)
+            . "\n[#7]: https://github.com/open-telemetry/opentelemetry-php/pull/7\n[GHSA-1]: https://github.com/advisories/GHSA-1\n"]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'markdown']));
+
+        $this->assertStringContainsString('- Dropped X (#7, [GHSA-1](https://github.com/advisories/GHSA-1)).', $this->tester->getDisplay());
+    }
+
+    public function test_text_format_leaves_references_as_written(): void
+    {
+        $this->monorepo(['src/API' => ['api', str_replace('- Dropped X.', '- Dropped X ([#7]).', self::BREAKING)
+            . "\n[#7]: https://github.com/open-telemetry/opentelemetry-php/pull/7\n"]]);
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
+
+        $this->assertStringContainsString('- Dropped X ([#7]).', $this->tester->getDisplay());
+    }
+
     public function test_json_format_prints_the_packages_and_order_on_stdout(): void
     {
         $this->monorepo(['src/API' => ['api', self::ADDED], 'src/SDK' => ['sdk', self::BREAKING], 'src/Context' => ['context', self::EMPTY]]);
@@ -553,7 +573,7 @@ class ReleasePrepCommandTest extends TestCase
 
         $body = $this->tester->getDisplay();
         $this->assertStringStartsWith("1 package would be released from `main` at def456.\n\n| Package | Latest | Next | Changes |", $body);
-        $this->assertStringContainsString('| api | 1.10.1 | 1.10.2 | 1 fixed |', $body);
+        $this->assertStringContainsString('| [api](https://github.com/open-telemetry/opentelemetry-php/blob/def456/src/API/CHANGELOG.md) | [1.10.1](https://github.com/opentelemetry-php/api/releases/tag/1.10.1) | 1.10.2 | 1 fixed |', $body);
         $this->assertStringContainsString('No changes: context.', $body);
         $this->assertStringContainsString("<details><summary>api 1.10.2</summary>\n\n#### Fixed\n\n- A bug (#7).\n\n</details>\n", $body);
         $this->assertStringContainsString('[DRY-RUN] no files were changed', $this->tester->getErrorOutput());

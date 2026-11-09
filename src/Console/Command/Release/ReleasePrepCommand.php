@@ -619,6 +619,8 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             $this->output->writeln('');
             $this->output->writeln($markdown ? "**{$entry->label()}**" : "<comment>{$entry->label()}: check before releasing</comment>");
             foreach ($entry->warnings as $warning) {
+                //a pull request body has no link definitions, so [#12] would show as written
+                $warning = $markdown ? ($entry->links?->inline($warning, $this->upstream) ?? $warning) : $warning;
                 $this->output->writeln('- ' . str_replace("\n", "\n  ", $warning));
             }
         }
