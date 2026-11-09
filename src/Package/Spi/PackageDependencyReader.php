@@ -22,6 +22,12 @@ class PackageDependencyReader
 
     public function read(string $path): ProviderDependencies
     {
+        //without providers there is nothing to reflect over, so skip the autoloader. Contrib's
+        //fails to load: its autoload.files call the SDK, which its root does not require.
+        $composer = is_file("{$path}/composer.json") ? json_decode((string) file_get_contents("{$path}/composer.json"), true) : null;
+        if (is_array($composer) && ($composer['extra']['spi'] ?? []) === []) {
+            return new ProviderDependencies();
+        }
         if (!is_file("{$path}/vendor/autoload.php")) {
             throw new RuntimeException("{$path}/vendor/autoload.php not found, run `composer install` in {$path} first");
         }

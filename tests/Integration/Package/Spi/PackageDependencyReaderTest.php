@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OpenTelemetry\DevTools\Tests\Integration\Package\Spi;
 
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
+use OpenTelemetry\DevTools\Package\Spi\ProviderDependencies;
 use OpenTelemetry\DevTools\Package\Spi\ProviderDependency;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -50,6 +51,13 @@ class PackageDependencyReaderTest extends TestCase
 
         $this->assertCount(3, $result->dependencies);
         $this->assertSame('src/ProviderWithDependencies.php', $result->dependencies[0]->file);
+    }
+
+    public function test_checkout_without_spi_providers_needs_no_autoloader(): void
+    {
+        $result = (new PackageDependencyReader())->read(__DIR__ . '/_files/without-spi');
+
+        $this->assertEquals(new ProviderDependencies(), $result);
     }
 
     public function test_fails_without_an_installed_vendor_directory(): void
