@@ -98,6 +98,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             ->addOption('date', null, InputOption::VALUE_OPTIONAL, 'release date, YYYY-MM-DD (default: today)')
             ->addOption('set', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'release a package as a given version, or not at all, <package>=<version|skip>')
             ->addOption('format', null, InputOption::VALUE_REQUIRED, 'report format: text, markdown, json (on stdout with the rest on stderr), or dashboard (an issue body on stdout, needs --dry-run)', 'text')
+            ->addOption('tracker', null, InputOption::VALUE_REQUIRED, 'with --format=dashboard, the <org>/<project> whose issue tracker holds the dashboard (default: the monorepo)')
         ;
     }
 
@@ -141,12 +142,18 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
             return Command::FAILURE;
         }
+        $tracker = $input->getOption('tracker');
+        if ($tracker !== null && preg_match('#^[\w.-]+/[\w.-]+$#', $tracker) !== 1) {
+            $errors->writeln('<error>--tracker must be <org>/<project>, such as open-telemetry/opentelemetry-php</error>');
+
+            return Command::FAILURE;
+        }
 
         try {
             if ($this->prepare($input, $errors, false) !== Command::SUCCESS) {
                 return Command::FAILURE;
             }
-            $body = (new Dashboard($this->upstream, $this->source_branch, $this->git->head($this->path)))
+            $body = (new Dashboard($this->upstream, $this->source_branch, $this->git->head($this->path), $tracker))
                 ->render($this->entries, $this->order);
         } catch (\Throwable $e) {
             $errors->writeln("<error>{$e->getMessage()}</error>");

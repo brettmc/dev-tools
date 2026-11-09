@@ -572,7 +572,8 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'dashboard'], ['interactive' => false, 'capture_stderr_separately' => true]));
 
         $body = $this->tester->getDisplay();
-        $this->assertStringStartsWith("1 package would be released from `main` at def456.\n\n| Package | Latest | Next | Changes |", $body);
+        $this->assertStringStartsWith('Release dashboard for [open-telemetry/opentelemetry-php](https://github.com/open-telemetry/opentelemetry-php).', $body);
+        $this->assertStringContainsString("1 package would be released from `main` at [def456](https://github.com/open-telemetry/opentelemetry-php/commit/def456).\n\n| Package | Latest | Next | Changes |", $body);
         $this->assertStringContainsString('| [api](https://github.com/open-telemetry/opentelemetry-php/blob/def456/src/API/CHANGELOG.md) | [1.10.1](https://github.com/opentelemetry-php/api/releases/tag/1.10.1) | 1.10.2 | 1 fixed |', $body);
         $this->assertStringContainsString('No changes: context.', $body);
         $this->assertStringContainsString("<details><summary>api 1.10.2</summary>\n\n#### Fixed\n\n- A bug (#7).\n\n</details>\n", $body);
@@ -588,6 +589,27 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'dashboard'], ['interactive' => false, 'capture_stderr_separately' => true]));
 
         $this->assertStringContainsString('- A bug (#7).', $this->tester->getDisplay());
+    }
+
+    public function test_dashboard_in_another_tracker_links_only_that_trackers_references_bare(): void
+    {
+        $this->monorepo(['src/Logs/Monolog' => ['contrib-logger-monolog', "# Changelog\n\n## Unreleased\n\n### Fixed\n\n- A bug ([#7]), after [#9].\n\n[#7]: https://github.com/open-telemetry/opentelemetry-php-contrib/pull/7\n[#9]: https://github.com/open-telemetry/opentelemetry-php/issues/9\n"]]);
+        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry-php-contrib"}');
+        $this->releases = ['contrib-logger-monolog' => '1.0.0'];
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'dashboard', '--tracker' => 'open-telemetry/opentelemetry-php'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertStringContainsString('- A bug ([#7](https://github.com/open-telemetry/opentelemetry-php-contrib/pull/7)), after #9.', $this->tester->getDisplay());
+    }
+
+    public function test_tracker_must_be_a_repository(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]]);
+
+        $this->assertSame(Command::FAILURE, $this->prep(['--dry-run' => true, '--format' => 'dashboard', '--tracker' => 'opentelemetry-php'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertSame('', $this->tester->getDisplay());
+        $this->assertStringContainsString('--tracker must be <org>/<project>', $this->tester->getErrorOutput());
     }
 
     public function test_dashboard_format_prints_nothing_on_stdout_when_the_prep_fails(): void

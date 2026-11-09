@@ -221,6 +221,7 @@ vendor/bin/otel release:prep --set=open-telemetry/sdk=2.0.0
 | `--date` | Release date as `YYYY-MM-DD` (default: today) |
 | `--set=<package>=<version\|skip>` | Release a package as this version, or not at all, without prompting. Repeatable. The package is the composer name or the split repository name. |
 | `--format` | `text` (default), `markdown` for a pull request description, `json`, or `dashboard` for an issue body |
+| `--tracker` | With `--format=dashboard`, the `<org>/<project>` whose issue tracker holds the dashboard (default: the monorepo) |
 | `-n`, `--no-interaction` | Accept every suggestion without prompting |
 
 For each package with a `CHANGELOG.md`, it prints the latest release, the suggestion and the reason,
@@ -337,6 +338,8 @@ would be released rather than preparing it.
 
 The body has:
 
+- a line naming the monorepo, and saying a workflow rewrites the issue
+- how many packages would be released, from which commit
 - a table of the packages with changes: latest release, next version and a count of entries per
   section. Each package links to its `CHANGELOG.md` at the commit, and each latest release to its
   GitHub release.
@@ -346,8 +349,16 @@ The body has:
 - each package's entries, collapsed under `<details>`
 
 References such as `[#12]` are made inline links, since the definitions at the foot of the changelog
-don't come with the entries. A pull request or issue of the monorepo becomes a bare `#12`, which
-GitHub links itself in that repository. If the body would be over the 65,536 characters an issue
+don't come with the entries. A pull request or issue of the repository whose tracker holds the
+issue becomes a bare `#12`, which GitHub links itself there. That is the monorepo, unless
+`--tracker=<org>/<project>` names another. Contrib has issues turned off, so its dashboard is in
+core's tracker:
+
+```shell
+vendor/bin/otel release:prep -n --dry-run --format=dashboard --tracker=open-telemetry/opentelemetry-php
+```
+
+If the body would be over the 65,536 characters an issue
 holds, the entries are left out.
 
 stdout holds the body and nothing else, and nothing at all when the prep fails. So a workflow can

@@ -19,7 +19,39 @@ use PHPUnit\Framework\TestCase;
 class DashboardTest extends TestCase
 {
     private const SHA = '841cc9a1b2c3d4e5f60718293a4b5c6d7e8f9012';
+    private const INTRO = "Release dashboard for [open-telemetry/opentelemetry-php](https://github.com/open-telemetry/opentelemetry-php). A workflow rewrites this issue from `release:prep --dry-run`, so edits to it are lost.\n\n";
+    private const AT = '`main` at [841cc9a](https://github.com/open-telemetry/opentelemetry-php/commit/' . self::SHA . ')';
     private const LINKS = "[#7]: https://github.com/open-telemetry/opentelemetry-php/pull/7\n";
+
+    public function test_intro_names_the_monorepo_and_says_edits_are_lost(): void
+    {
+        $body = $this->render([$this->entry('api', '1.11.0', '1.11.1', ['Fixed' => ['D.']])], monorepo: 'open-telemetry/opentelemetry-php-contrib');
+
+        $this->assertStringStartsWith(
+            'Release dashboard for [open-telemetry/opentelemetry-php-contrib](https://github.com/open-telemetry/opentelemetry-php-contrib). '
+            . "A workflow rewrites this issue from `release:prep --dry-run`, so edits to it are lost.\n\n",
+            $body
+        );
+    }
+
+    public function test_commit_is_a_link_so_it_resolves_from_another_tracker(): void
+    {
+        $body = $this->render([$this->entry('api', '1.11.0', '1.11.1', ['Fixed' => ['D.']])], monorepo: 'open-telemetry/opentelemetry-php-contrib');
+
+        $this->assertStringContainsString('1 package would be released from `main` at [841cc9a](https://github.com/open-telemetry/opentelemetry-php-contrib/commit/' . self::SHA . ").\n", $body);
+    }
+
+    public function test_only_references_to_the_issue_tracker_are_bare(): void
+    {
+        $warning = 'Dropped X ([#8]). It was in core ([#7]).';
+        $entry = $this->entry('contrib-x', '1.0.0', '2.0.0', ['Breaking changes' => [$warning]], warnings: [$warning]);
+        $entry->links = new ChangelogLinks(self::LINKS . "[#8]: https://github.com/open-telemetry/opentelemetry-php-contrib/pull/8\n");
+
+        $body = $this->render([$entry], monorepo: 'open-telemetry/opentelemetry-php-contrib', issues: 'open-telemetry/opentelemetry-php');
+
+        $this->assertStringContainsString('- contrib-x: Dropped X ([#8](https://github.com/open-telemetry/opentelemetry-php-contrib/pull/8)). ... (#7)', $body);
+        $this->assertStringContainsString('- Dropped X ([#8](https://github.com/open-telemetry/opentelemetry-php-contrib/pull/8)). It was in core (#7).', $body);
+    }
 
     public function test_summary_table_order_and_unchanged_packages(): void
     {
@@ -30,7 +62,7 @@ class DashboardTest extends TestCase
             $this->entry('sem-conv', '1.37.0', null, [], 'no unreleased changes'),
         ], new ReleaseOrderReport(['open-telemetry/api', 'open-telemetry/sdk']));
 
-        $this->assertStringStartsWith('2 packages would be released from `main` at ' . self::SHA . ".\n\n", $body);
+        $this->assertStringStartsWith(self::INTRO . '2 packages would be released from ' . self::AT . ".\n\n", $body);
         $this->assertStringContainsString(<<<'MD'
             | Package | Latest | Next | Changes |
             |---|---|---|---|
@@ -47,7 +79,7 @@ class DashboardTest extends TestCase
     {
         $body = $this->render([$this->entry('api', '1.11.0', '1.11.1', ['Fixed' => ['D.']])]);
 
-        $this->assertStringStartsWith('1 package would be released', $body);
+        $this->assertStringStartsWith(self::INTRO . '1 package would be released', $body);
         $this->assertStringNotContainsString('Tag order', $body);
         $this->assertStringNotContainsString('No changes', $body);
     }
@@ -56,7 +88,7 @@ class DashboardTest extends TestCase
     {
         $body = $this->render([$this->entry('api', '1.11.0', null, [], 'no unreleased changes')]);
 
-        $this->assertSame('Nothing would be released from `main` at ' . self::SHA . ".\n\nNo changes: api.\n", $body);
+        $this->assertSame(self::INTRO . 'Nothing would be released from ' . self::AT . ".\n\nNo changes: api.\n", $body);
     }
 
     public function test_package_without_a_version_shows_why_in_the_table(): void
@@ -169,9 +201,9 @@ class DashboardTest extends TestCase
     /**
      * @param array<PrepEntry> $entries
      */
-    private function render(array $entries, ?ReleaseOrderReport $order = null): string
+    private function render(array $entries, ?ReleaseOrderReport $order = null, string $monorepo = 'open-telemetry/opentelemetry-php', ?string $issues = null): string
     {
-        return (new Dashboard('open-telemetry/opentelemetry-php', 'main', self::SHA))->render($entries, $order ?? new ReleaseOrderReport());
+        return (new Dashboard($monorepo, 'main', self::SHA, $issues))->render($entries, $order ?? new ReleaseOrderReport());
     }
 
     /**

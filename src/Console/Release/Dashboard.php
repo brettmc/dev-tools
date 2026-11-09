@@ -21,14 +21,20 @@ final class Dashboard
         'Breaking changes' => 'breaking',
     ];
 
+    private readonly string $issues;
+
     /**
-     * @param string $repository the monorepo, `org/project`, whose pull requests and issues `#12` links to
+     * @param string $repository the monorepo, `org/project`
+     * @param string|null $issues the repository whose tracker holds the issue, where a bare `#12`
+     *        links. Contrib has issues turned off, so its dashboard is in core's tracker.
      */
     public function __construct(
         private readonly string $repository,
         private readonly string $branch,
         private readonly string $sha,
+        ?string $issues = null,
     ) {
+        $this->issues = $issues ?? $repository;
     }
 
     /**
@@ -54,15 +60,21 @@ final class Dashboard
     {
         $released = count(array_filter($entries, static fn (PrepEntry $entry): bool => $entry->version !== null));
         $blocks = [sprintf(
-            '%s from `%s` at %s.',
+            'Release dashboard for [%1$s](https://github.com/%1$s). A workflow rewrites this issue from `release:prep --dry-run`, so edits to it are lost.',
+            $this->repository,
+        )];
+        $blocks[] = sprintf(
+            '%s from `%s` at [%s](https://github.com/%s/commit/%s).',
             match ($released) {
                 0 => 'Nothing would be released',
                 1 => '1 package would be released',
                 default => "{$released} packages would be released",
             },
             $this->branch,
+            substr($this->sha, 0, 7),
+            $this->repository,
             $this->sha,
-        )];
+        );
 
         $changed = $this->changed($entries);
         if ($changed !== []) {
@@ -162,7 +174,7 @@ final class Dashboard
             $links = $entry->links;
             $dropped = $links === null ? [] : array_diff($links->references($rest), $links->references($first));
             if ($links !== null && $dropped !== []) {
-                $line .= ' (' . implode(', ', array_map(fn (string $label): string => $links->link($label, $this->repository), $dropped)) . ')';
+                $line .= ' (' . implode(', ', array_map(fn (string $label): string => $links->link($label, $this->issues), $dropped)) . ')';
             }
         }
 
@@ -175,7 +187,7 @@ final class Dashboard
      */
     private function markdown(string $text, PrepEntry $entry): string
     {
-        $text = $entry->links?->inline($text, $this->repository) ?? $text;
+        $text = $entry->links?->inline($text, $this->issues) ?? $text;
 
         return MarkdownText::outsideCode($text, static fn (string $run): string => str_replace(['<', '>'], ['&lt;', '&gt;'], $run));
     }
