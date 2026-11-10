@@ -13,6 +13,9 @@ jobs:
   php:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # for the Codecov upload
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
@@ -81,4 +84,12 @@ jobs:
         continue-on-error: ${{ matrix.experimental }}
         run: |
           vendor/bin/phpunit --version
-          php -dzend.assertions=1 vendor/bin/phpunit --coverage-text
+          php -dzend.assertions=1 vendor/bin/phpunit --coverage-text --coverage-clover=coverage.clover
+
+      - name: Code Coverage
+        if: matrix.php-version == '8.4'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: ./coverage.clover
+          verbose: false

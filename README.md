@@ -1,6 +1,9 @@
 # Development tools for OpenTelemetry PHP
 
-![CI Build](https://github.com/opentelemetry-php/dev-tools/workflows/PHP%20QA/badge.svg)
+[![CI Build](https://github.com/opentelemetry-php/dev-tools/actions/workflows/php.yaml/badge.svg?branch=main)](https://github.com/opentelemetry-php/dev-tools/actions/workflows/php.yaml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/opentelemetry-php/dev-tools/branch/main/graph/badge.svg)](https://codecov.io/gh/opentelemetry-php/dev-tools)
+[![PHP version](https://img.shields.io/packagist/dependency-v/open-telemetry/dev-tools/php)](https://packagist.org/packages/open-telemetry/dev-tools)
+[![Slack](https://img.shields.io/badge/slack-@cncf/otel--php-brightgreen.svg?logo=slack)](https://cloud-native.slack.com/archives/C01NFPCV44V)
 
 `dev-tools` is the command line tool the OpenTelemetry PHP maintainers use to check and release the
 packages in the two monorepos,
