@@ -39,7 +39,6 @@ class ChangelogCheckCommandTest extends TestCase
               - prefix: "src/Context"
                 target: "https://${GH_TOKEN}@github.com/opentelemetry-php/context.git"
             YAML);
-        $this->write('composer.json', '{"name":"open-telemetry/opentelemetry"}');
         foreach (['src/API', 'src/SDK', 'src/Context'] as $prefix) {
             $this->write("{$prefix}/composer.json", '{}');
             $this->write("{$prefix}/a.php", '<?php');

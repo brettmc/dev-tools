@@ -214,7 +214,6 @@ class ReleasePrepCommandTest extends TestCase
         $base = sys_get_temp_dir() . '/release-prep-' . bin2hex(random_bytes(4));
         mkdir("{$base}/monorepo/src/API", 0o777, true);
         copy($this->root->url() . '/.gitsplit.yml', "{$base}/monorepo/.gitsplit.yml");
-        copy($this->root->url() . '/composer.json', "{$base}/monorepo/composer.json");
         $cwd = (string) getcwd();
         chdir($base);
 
@@ -582,8 +581,7 @@ class ReleasePrepCommandTest extends TestCase
 
     public function test_dashboard_format_links_contrib_references_to_contrib(): void
     {
-        $this->monorepo(['src/Logs/Monolog' => ['contrib-logger-monolog', "# Changelog\n\n## Unreleased\n\n### Fixed\n\n- A bug ([#7]).\n\n[#7]: https://github.com/open-telemetry/opentelemetry-php-contrib/pull/7\n"]]);
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry-php-contrib"}');
+        $this->monorepo(['src/Logs/Monolog' => ['contrib-logger-monolog', "# Changelog\n\n## Unreleased\n\n### Fixed\n\n- A bug ([#7]).\n\n[#7]: https://github.com/open-telemetry/opentelemetry-php-contrib/pull/7\n"]], 'open-telemetry/opentelemetry-php-contrib');
         $this->releases = ['contrib-logger-monolog' => '1.0.0'];
 
         $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'dashboard'], ['interactive' => false, 'capture_stderr_separately' => true]));
@@ -593,8 +591,7 @@ class ReleasePrepCommandTest extends TestCase
 
     public function test_dashboard_in_another_tracker_links_only_that_trackers_references_bare(): void
     {
-        $this->monorepo(['src/Logs/Monolog' => ['contrib-logger-monolog', "# Changelog\n\n## Unreleased\n\n### Fixed\n\n- A bug ([#7]), after [#9].\n\n[#7]: https://github.com/open-telemetry/opentelemetry-php-contrib/pull/7\n[#9]: https://github.com/open-telemetry/opentelemetry-php/issues/9\n"]]);
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry-php-contrib"}');
+        $this->monorepo(['src/Logs/Monolog' => ['contrib-logger-monolog', "# Changelog\n\n## Unreleased\n\n### Fixed\n\n- A bug ([#7]), after [#9].\n\n[#7]: https://github.com/open-telemetry/opentelemetry-php-contrib/pull/7\n[#9]: https://github.com/open-telemetry/opentelemetry-php/issues/9\n"]], 'open-telemetry/opentelemetry-php-contrib');
         $this->releases = ['contrib-logger-monolog' => '1.0.0'];
 
         $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'dashboard', '--tracker' => 'open-telemetry/opentelemetry-php'], ['interactive' => false, 'capture_stderr_separately' => true]));
@@ -802,14 +799,13 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('## 1.10.2 - 2026-11-03', $this->changelog('src/API'));
     }
 
-    public function test_checkout_of_neither_monorepo_fails_naming_its_root(): void
+    public function test_checkout_of_neither_monorepo_fails_naming_its_project(): void
     {
-        $this->monorepo(['src/API' => ['api', self::FIXED]]);
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"acme/monorepo"}');
+        $this->monorepo(['src/API' => ['api', self::FIXED]], 'acme/monorepo');
 
         $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
         $this->assertStringContainsString(
-            'is not a checkout of open-telemetry/opentelemetry-php or open-telemetry/opentelemetry-php-contrib: its composer.json is named "acme/monorepo"',
+            'is not a checkout of open-telemetry/opentelemetry-php or open-telemetry/opentelemetry-php-contrib: its .gitsplit.yml project_url names acme/monorepo',
             $this->tester->getDisplay()
         );
         $this->assertSame(self::FIXED, $this->changelog('src/API'));
@@ -875,8 +871,7 @@ class ReleasePrepCommandTest extends TestCase
 
     public function test_contrib_checkout_is_checked_against_contrib(): void
     {
-        $this->monorepo(['src/Instrumentation/Laravel' => ['contrib-auto-laravel', self::FIXED]]);
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry-php-contrib"}');
+        $this->monorepo(['src/Instrumentation/Laravel' => ['contrib-auto-laravel', self::FIXED]], 'open-telemetry/opentelemetry-php-contrib');
         $this->releases = ['contrib-auto-laravel' => '1.0.0'];
 
         $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
@@ -885,12 +880,35 @@ class ReleasePrepCommandTest extends TestCase
 
     public function test_checkout_of_an_unknown_monorepo_fails(): void
     {
-        $this->monorepo(['src/API' => ['api', self::FIXED]]);
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"acme/monorepo"}');
+        $this->monorepo(['src/API' => ['api', self::FIXED]], 'acme/monorepo');
 
         $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
         $this->assertStringContainsString('acme/monorepo', $this->tester->getDisplay());
         $this->assertSame(self::FIXED, $this->changelog('src/API'));
+    }
+
+    public function test_checkout_without_a_project_url_fails_naming_gitsplit(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::FIXED]], null);
+
+        $this->assertSame(Command::FAILURE, $this->prep([], ['interactive' => false]));
+        $this->assertStringContainsString(
+            'is not a checkout of open-telemetry/opentelemetry-php or open-telemetry/opentelemetry-php-contrib: its .gitsplit.yml has no project_url',
+            $this->tester->getDisplay()
+        );
+        $this->assertSame(self::FIXED, $this->changelog('src/API'));
+        $this->assertSame([], $this->requests);
+    }
+
+    public function test_checkout_without_a_root_composer_json_is_prepared(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::ADDED]]);
+        $this->alias('src/API', 'open-telemetry/api', '1.10.x-dev');
+
+        $this->assertSame(Command::SUCCESS, $this->prep([], ['interactive' => false]));
+        $this->assertSame('1.11.x-dev', $this->branchAlias('src/API'));
+        $this->assertFileDoesNotExist($this->root->url() . '/composer.json');
+        $this->assertStringNotContainsString('Root replace', $this->tester->getDisplay());
     }
 
     public function test_failed_branch_lookup_fails(): void
@@ -914,9 +932,12 @@ class ReleasePrepCommandTest extends TestCase
     }
 
     /**
+     * A checkout without a root composer.json, as contrib's can be. root() adds one.
+     *
      * @param array<string, array{0: string, 1: ?string}> $packages prefix => [downstream project, changelog]
+     * @param ?string $repository the monorepo its .gitsplit.yml names, or null for no project_url
      */
-    private function monorepo(array $packages): void
+    private function monorepo(array $packages, ?string $repository = 'open-telemetry/opentelemetry-php'): void
     {
         $splits = '';
         foreach ($packages as $prefix => [$project, $changelog]) {
@@ -927,8 +948,8 @@ class ReleasePrepCommandTest extends TestCase
                 file_put_contents("{$dir}/CHANGELOG.md", $changelog);
             }
         }
-        file_put_contents($this->root->url() . '/.gitsplit.yml', "splits:\n{$splits}");
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry"}');
+        $project = $repository === null ? '' : "project_url: \"https://github.com/{$repository}.git\"\n";
+        file_put_contents($this->root->url() . '/.gitsplit.yml', "{$project}splits:\n{$splits}");
     }
 
     /**

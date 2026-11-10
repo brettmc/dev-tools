@@ -102,18 +102,21 @@ trait UsesThirdPartyCommandTrait
 
     protected function addComposer(ComposerBaseCommand $command): void
     {
-        $command->setComposer(
-            $this->createComposer()
-        );
+        $composer = $this->createComposer();
+        $composer === null || $command->setComposer($composer);
 
         $command->setApplication(
             $this->createComposerApplication()
         );
     }
 
-    protected function createComposer(): Composer
+    /**
+     * Null when the working directory has no composer.json, as a monorepo without a root one does.
+     * The command then makes its own.
+     */
+    protected function createComposer(): ?Composer
     {
-        return Factory::create(new NullIO());
+        return is_file(Factory::getComposerFile()) ? Factory::create(new NullIO()) : null;
     }
 
     protected function createComposerApplication(): ComposerApplication

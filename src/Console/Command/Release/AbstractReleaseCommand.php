@@ -24,11 +24,6 @@ abstract class AbstractReleaseCommand extends BaseCommand
         'core'    => 'open-telemetry/opentelemetry-php',
         'contrib' => 'open-telemetry/opentelemetry-php-contrib',
     ];
-    /** The root composer.json name of each monorepo, which is not named after its repository */
-    protected const ROOT_PACKAGES = [
-        'open-telemetry/opentelemetry-php' => 'open-telemetry/opentelemetry',
-        'open-telemetry/opentelemetry-php-contrib' => 'open-telemetry/opentelemetry-php-contrib',
-    ];
     protected GitHub $github;
     protected ?string $token = null;
     protected bool $dry_run = false;
@@ -153,24 +148,24 @@ abstract class AbstractReleaseCommand extends BaseCommand
     }
 
     /**
-     * Which of core and contrib the checkout is of, from its root composer.json name. Null, having
-     * said so, when it is neither.
+     * Which of core and contrib the checkout is of, from its .gitsplit.yml `project_url`. Null, having
+     * said so, when it is neither, or is not $expected. A fork's checkout names the upstream
+     * repository too, so this is only a claim: the branch tip checks are what show it holds.
      */
-    protected function upstream(string $path, MonorepoCheckout $monorepo): ?string
+    protected function upstream(string $path, MonorepoCheckout $monorepo, ?string $expected = null): ?string
     {
-        $upstream = array_search($monorepo->name, self::ROOT_PACKAGES, true);
-        if ($upstream === false) {
-            $this->output->writeln(sprintf(
-                '<error>%s is not a checkout of %s: its composer.json is named "%s"</error>',
-                $path,
-                implode(' or ', array_keys(self::ROOT_PACKAGES)),
-                $monorepo->name,
-            ));
-
-            return null;
+        $repositories = $expected === null ? array_values(self::AVAILABLE_REPOS) : [$expected];
+        if ($monorepo->repository !== null && in_array($monorepo->repository, $repositories, true)) {
+            return $monorepo->repository;
         }
+        $this->output->writeln(sprintf(
+            '<error>%s is not a checkout of %s: its .gitsplit.yml %s</error>',
+            $path,
+            implode(' or ', $repositories),
+            $monorepo->repository === null ? 'has no project_url' : "project_url names {$monorepo->repository}",
+        ));
 
-        return $upstream;
+        return null;
     }
 
     /**

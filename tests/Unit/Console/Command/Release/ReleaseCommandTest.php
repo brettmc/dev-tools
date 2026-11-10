@@ -38,6 +38,8 @@ class ReleaseCommandTest extends TestCase
     private array $splits = [];
     /** .gitsplit.yml as written, when a test needs it malformed */
     private ?string $gitsplit = null;
+    /** the monorepo that .gitsplit.yml's project_url names */
+    private string $repository = 'open-telemetry/opentelemetry-php';
     private ProviderDependencies $dependencies;
     private ?RuntimeException $readError = null;
     private ?string $head = 'abc123';
@@ -99,7 +101,6 @@ class ReleaseCommandTest extends TestCase
     {
         $this->setUpVcs();
         file_put_contents($this->root->url() . '/.gitsplit.yml', 'splits: []');
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry"}');
         $this->dependencies = new ProviderDependencies();
         $this->environmentToken = getenv('GITHUB_TOKEN');
         putenv('GITHUB_TOKEN');
@@ -481,7 +482,7 @@ class ReleaseCommandTest extends TestCase
 
     public function test_without_repo_the_checkout_is_released(): void
     {
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry-php-contrib"}');
+        $this->repository = 'open-telemetry/opentelemetry-php-contrib';
 
         $status = $this->run_release('', ['--repo' => null], false);
 
@@ -501,7 +502,7 @@ class ReleaseCommandTest extends TestCase
 
     public function test_checkout_of_another_monorepo_fails_before_calling_github(): void
     {
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry-php-contrib"}');
+        $this->repository = 'open-telemetry/opentelemetry-php-contrib';
 
         $status = $this->run_release('');
 
@@ -510,23 +511,23 @@ class ReleaseCommandTest extends TestCase
         $this->assertStringContainsString('not a checkout of open-telemetry/opentelemetry-php', $this->output());
     }
 
-    public function test_without_repo_a_checkout_of_neither_monorepo_fails_naming_its_root(): void
+    public function test_without_repo_a_checkout_of_neither_monorepo_fails_naming_its_project(): void
     {
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"acme/monorepo"}');
+        $this->repository = 'acme/monorepo';
 
         $status = $this->run_release('', ['--repo' => null], false);
 
         $this->assertSame(1, $status);
         $this->assertSame([], $this->requests);
         $this->assertStringContainsString(
-            'is not a checkout of open-telemetry/opentelemetry-php or open-telemetry/opentelemetry-php-contrib: its composer.json is named "acme/monorepo"',
+            'is not a checkout of open-telemetry/opentelemetry-php or open-telemetry/opentelemetry-php-contrib: its .gitsplit.yml project_url names acme/monorepo',
             $this->output()
         );
     }
 
     public function test_contrib_checkout_is_used_for_contrib(): void
     {
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry-php-contrib"}');
+        $this->repository = 'open-telemetry/opentelemetry-php-contrib';
 
         $this->run_release("\n\n\n", ['--repo' => 'contrib']);
 
@@ -1186,7 +1187,7 @@ class ReleaseCommandTest extends TestCase
         if (!is_file($gitsplit)) {
             return;
         }
-        $yaml = "splits:\n";
+        $yaml = "project_url: \"https://github.com/{$this->repository}.git\"\nsplits:\n";
         foreach ($this->splits() as $project => [$prefix, , $changelog]) {
             $yaml .= "  - prefix: \"{$prefix}\"\n    target: \"https://\${GH_TOKEN}@github.com/opentelemetry-php/{$project}.git\"\n";
             $dir = $this->root->url() . "/{$prefix}";

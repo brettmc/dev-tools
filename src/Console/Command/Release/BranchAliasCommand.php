@@ -65,7 +65,11 @@ class BranchAliasCommand extends AbstractReleaseCommand
         if ($monorepo === null) {
             return Command::FAILURE;
         }
-        $found = $this->split_repositories($monorepo, $monorepo->name, $input->getOption('filter'));
+        $upstream = $this->upstream($path, $monorepo);
+        if ($upstream === null) {
+            return Command::FAILURE;
+        }
+        $found = $this->split_repositories($monorepo, $upstream, $input->getOption('filter'));
         if (count($found) === 0) {
             $this->output->writeln('<error>No packages found!</error>');
 

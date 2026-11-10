@@ -67,7 +67,48 @@ class MonorepoCheckoutTest extends TestCase
             ['src/API' => 'opentelemetry-php/api', 'src/Contrib/Otlp' => 'example-php/exporter-otlp'],
             $checkout->splits
         );
-        $this->assertSame('open-telemetry/opentelemetry', $checkout->name);
+    }
+
+    public function test_repository_is_read_from_the_project_url(): void
+    {
+        $this->checkout([], []);
+        file_put_contents(
+            $this->root->url() . '/.gitsplit.yml',
+            "project_url: \"https://github.com/open-telemetry/opentelemetry-php-contrib.git\"\nsplits: []\n"
+        );
+
+        $this->assertSame('open-telemetry/opentelemetry-php-contrib', MonorepoCheckout::read($this->root->url())->repository);
+    }
+
+    public function test_repository_is_null_without_a_project_url(): void
+    {
+        $this->checkout([], []);
+        $this->gitsplit('');
+
+        $this->assertNull(MonorepoCheckout::read($this->root->url())->repository);
+    }
+
+    public function test_a_project_url_naming_no_repository_is_refused(): void
+    {
+        $this->checkout([], []);
+        file_put_contents($this->root->url() . '/.gitsplit.yml', "project_url: \"opentelemetry\"\nsplits: []\n");
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('.gitsplit.yml project_url "opentelemetry" does not name a repository');
+
+        MonorepoCheckout::read($this->root->url());
+    }
+
+    public function test_a_checkout_needs_no_root_composer_json(): void
+    {
+        $this->checkout(['src/API' => ['open-telemetry/api', '1.11.x-dev']], ['open-telemetry/api' => '1.0.x-dev']);
+        unlink($this->root->url() . '/composer.json');
+
+        $this->assertTrue(MonorepoCheckout::isCheckout($this->root->url()));
+        $checkout = MonorepoCheckout::read($this->root->url());
+        $this->assertSame(['src/API'], $checkout->prefixes);
+        $this->assertSame(['open-telemetry/api' => '1.11.x-dev'], $checkout->aliases);
+        $this->assertSame([], $checkout->replace);
     }
 
     public function test_an_empty_splits_list_has_no_splits(): void

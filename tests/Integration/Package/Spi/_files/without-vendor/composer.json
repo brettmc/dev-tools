@@ -1,0 +1,10 @@
+{
+    "name": "fixture/without-vendor",
+    "extra": {
+        "spi": {
+            "Fixture\\Service": [
+                "Fixture\\ProviderWithDependencies"
+            ]
+        }
+    }
+}
