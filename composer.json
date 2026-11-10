@@ -4,10 +4,16 @@
     "description": "Development tools for OpenTelemetry PHP.",
     "authors": [
         {
-            "name": "Timo Michna",
-            "email": "timomichna@yahoo.de"
+            "name": "opentelemetry-php contributors",
+            "homepage": "https://github.com/opentelemetry-php/dev-tools/graphs/contributors"
         }
     ],
+    "support": {
+        "issues": "https://github.com/open-telemetry/opentelemetry-php/issues",
+        "source": "https://github.com/opentelemetry-php/dev-tools",
+        "docs": "https://opentelemetry.io/docs/languages/php",
+        "chat": "https://app.slack.com/client/T08PSQ7BQ/C01NFPCV44V"
+    },
     "license": "Apache-2.0",
     "minimum-stability": "dev",
     "prefer-stable": true,
