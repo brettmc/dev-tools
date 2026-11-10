@@ -102,9 +102,6 @@ class BranchAliasCommandTest extends TestCase
 
     public function test_fails_when_a_split_has_no_prefix(): void
     {
-        vfsStream::newFile('composer.json')
-            ->withContent('{"name":"open-telemetry/opentelemetry"}')
-            ->at($this->root);
         vfsStream::newFile('.gitsplit.yml')
             ->withContent("splits:\n  - target: \"https://github.com/opentelemetry-php/api.git\"\n")
             ->at($this->root);
@@ -113,13 +110,20 @@ class BranchAliasCommandTest extends TestCase
         $this->assertStringContainsString('.gitsplit.yml split 1 has no prefix', $this->commandTester->getDisplay());
     }
 
+    public function test_fails_when_the_checkout_is_of_neither_monorepo(): void
+    {
+        vfsStream::newFile('.gitsplit.yml')
+            ->withContent("splits:\n  - prefix: \"src/API\"\n    target: \"https://github.com/opentelemetry-php/api.git\"\n")
+            ->at($this->root);
+
+        $this->assertSame(Command::FAILURE, $this->execute($this->root->url()));
+        $this->assertStringContainsString('.gitsplit.yml has no project_url', $this->commandTester->getDisplay());
+    }
+
     public function test_fails_when_split_config_has_no_packages(): void
     {
-        vfsStream::newFile('composer.json')
-            ->withContent('{"name":"open-telemetry/opentelemetry"}')
-            ->at($this->root);
         vfsStream::newFile('.gitsplit.yml')
-            ->withContent("splits:\n")
+            ->withContent("project_url: \"https://github.com/open-telemetry/opentelemetry-php.git\"\nsplits:\n")
             ->at($this->root);
 
         $this->assertSame(
@@ -194,8 +198,8 @@ class BranchAliasCommandTest extends TestCase
         mkdir($root, 0o777, true);
         $this->cleanup[] = $base;
 
-        file_put_contents("{$root}/composer.json", '{"name":"open-telemetry/opentelemetry"}');
         file_put_contents("{$root}/.gitsplit.yml", <<<YAML
+            project_url: "https://github.com/open-telemetry/opentelemetry-php.git"
             splits:
               - prefix: "{$prefix}"
                 target: "https://\${GH_TOKEN}@github.com/open-telemetry/opentelemetry-php-api.git"

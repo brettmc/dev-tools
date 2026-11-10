@@ -46,7 +46,11 @@ class ReleaseListCommand extends AbstractReleaseCommand
         if ($monorepo === null) {
             return Command::FAILURE;
         }
-        $found = $this->split_repositories($monorepo, $monorepo->name, null);
+        $upstream = $this->upstream($path, $monorepo);
+        if ($upstream === null) {
+            return Command::FAILURE;
+        }
+        $found = $this->split_repositories($monorepo, $upstream, null);
         if (count($found) === 0) {
             $this->output->writeln('<error>No repositories found!</error>');
 

@@ -25,7 +25,6 @@ class ValidatePackagesCommandTest extends TestCase
     {
         $this->root = sys_get_temp_dir() . '/validate-packages-' . bin2hex(random_bytes(4));
         mkdir($this->root);
-        file_put_contents("{$this->root}/composer.json", '{"name":"open-telemetry/opentelemetry"}');
     }
 
     #[\Override]
@@ -134,8 +133,6 @@ class ValidatePackagesCommandTest extends TestCase
 
     public function test_directory_that_is_not_a_checkout_fails(): void
     {
-        unlink("{$this->root}/composer.json");
-
         $commandTester = $this->execute();
 
         $this->assertSame(Command::FAILURE, $commandTester->getStatusCode());

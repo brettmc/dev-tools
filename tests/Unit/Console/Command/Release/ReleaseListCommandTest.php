@@ -31,8 +31,7 @@ class ReleaseListCommandTest extends TestCase
     public function setUp(): void
     {
         $this->setUpVcs();
-        file_put_contents($this->root->url() . '/composer.json', '{"name":"open-telemetry/opentelemetry"}');
-        $yaml = "splits:\n";
+        $yaml = "project_url: \"https://github.com/open-telemetry/opentelemetry-php.git\"\nsplits:\n";
         foreach (['src/API' => 'api', 'src/SDK' => 'sdk'] as $prefix => $project) {
             $yaml .= "  - prefix: \"{$prefix}\"\n    target: \"https://\${GH_TOKEN}@github.com/opentelemetry-php/{$project}.git\"\n";
         }
@@ -74,7 +73,6 @@ class ReleaseListCommandTest extends TestCase
         $cwd = (string) getcwd();
         $dir = sys_get_temp_dir() . '/release-list-' . bin2hex(random_bytes(4));
         mkdir($dir);
-        copy($this->root->url() . '/composer.json', "{$dir}/composer.json");
         copy($this->root->url() . '/.gitsplit.yml', "{$dir}/.gitsplit.yml");
         chdir($dir);
 
@@ -82,7 +80,6 @@ class ReleaseListCommandTest extends TestCase
             $status = $this->tester->execute([]);
         } finally {
             chdir($cwd);
-            unlink("{$dir}/composer.json");
             unlink("{$dir}/.gitsplit.yml");
             rmdir($dir);
         }
@@ -100,6 +97,16 @@ class ReleaseListCommandTest extends TestCase
         $this->assertSame(Command::FAILURE, $status);
         $this->assertSame([], $this->urls);
         $this->assertStringContainsString('not a monorepo checkout', $this->tester->getDisplay());
+    }
+
+    public function test_checkout_of_neither_monorepo_fails_before_calling_github(): void
+    {
+        $gitsplit = $this->root->url() . '/.gitsplit.yml';
+        file_put_contents($gitsplit, str_replace('open-telemetry/opentelemetry-php', 'acme/monorepo', (string) file_get_contents($gitsplit)));
+
+        $this->assertSame(Command::FAILURE, $this->tester->execute(['--path' => $this->root->url()]));
+        $this->assertSame([], $this->urls);
+        $this->assertStringContainsString('project_url names acme/monorepo', $this->tester->getDisplay());
     }
 
     public function test_split_without_a_target_fails_naming_it(): void

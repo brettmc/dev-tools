@@ -11,7 +11,7 @@ use Symfony\Component\Yaml\Yaml;
 /**
  * The split packages of a monorepo checkout, from its own .gitsplit.yml, and as composer sees them in
  * the tree: each package's `dev-main` alias, and the root `replace` that stands in for them while
- * developing.
+ * developing. The root composer.json is optional: only core's has a `replace`.
  */
 final class MonorepoCheckout
 {
@@ -20,8 +20,7 @@ final class MonorepoCheckout
     private const BRANCH_KEY = 'dev-main';
 
     /**
-     * @param string $name the root composer.json name, '' when it has none. A monorepo is not named
-     *        after its repository: core's is `open-telemetry/opentelemetry`.
+     * @param ?string $repository the monorepo, `org/project`, from .gitsplit.yml's `project_url`
      * @param array<string, string> $splits downstream repository (`org/project`) by prefix, in
      *        .gitsplit.yml order
      * @param array<string, ?string> $aliases `dev-main` alias by package name, in .gitsplit.yml order
@@ -29,7 +28,7 @@ final class MonorepoCheckout
      * @param list<string> $prefixes every split's directory, in .gitsplit.yml order
      */
     private function __construct(
-        public readonly string $name,
+        public readonly ?string $repository,
         public readonly array $splits,
         public readonly array $aliases,
         public readonly array $replace,
@@ -43,9 +42,11 @@ final class MonorepoCheckout
     public static function read(string $path): self
     {
         if (!self::isCheckout($path)) {
-            throw new RuntimeException(sprintf('%s is not a monorepo checkout (no %s and %s found)', $path, self::GITSPLIT_FILE, self::COMPOSER_FILE));
+            throw new RuntimeException(sprintf('%s is not a monorepo checkout (no %s found)', $path, self::GITSPLIT_FILE));
         }
-        $splits = self::splits($path . '/' . self::GITSPLIT_FILE);
+        $file = $path . '/' . self::GITSPLIT_FILE;
+        $config = self::gitsplit($file);
+        $splits = self::splits($file, $config);
 
         $aliases = [];
         foreach (array_keys($splits) as $prefix) {
@@ -60,7 +61,7 @@ final class MonorepoCheckout
         $replace = $root['replace'] ?? [];
 
         return new self(
-            is_string($root['name'] ?? null) ? $root['name'] : '',
+            self::repository($file, $config),
             $splits,
             $aliases,
             is_array($replace) ? array_filter($replace, 'is_string') : [],
@@ -73,19 +74,45 @@ final class MonorepoCheckout
      */
     public static function isCheckout(string $path): bool
     {
-        return is_file($path . '/' . self::GITSPLIT_FILE) && is_file($path . '/' . self::COMPOSER_FILE);
+        return is_file($path . '/' . self::GITSPLIT_FILE);
+    }
+
+    private static function gitsplit(string $file): mixed
+    {
+        try {
+            return Yaml::parse((string) file_get_contents($file));
+        } catch (ParseException $e) {
+            throw new RuntimeException("{$file} does not parse: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    private static function repository(string $file, array $config): ?string
+    {
+        $url = $config['project_url'] ?? null;
+        if ($url === null) {
+            return null;
+        }
+        $repository = is_string($url) ? self::repositoryOf($url) : null;
+        if ($repository === null) {
+            throw new RuntimeException(sprintf('%s project_url %s does not name a repository', $file, (string) json_encode($url, JSON_UNESCAPED_SLASHES)));
+        }
+
+        return $repository;
+    }
+
+    /**
+     * `org/project` from a repository URL, eg https://${GH_TOKEN}@github.com/opentelemetry-php/api.git
+     */
+    private static function repositoryOf(string $url): ?string
+    {
+        return preg_match('#([^/:@]+)/([^/]+?)(?:\.git)?/?$#', $url, $matches) === 1 ? "{$matches[1]}/{$matches[2]}" : null;
     }
 
     /**
      * @return array<string, string>
      */
-    private static function splits(string $file): array
+    private static function splits(string $file, mixed $config): array
     {
-        try {
-            $config = Yaml::parse((string) file_get_contents($file));
-        } catch (ParseException $e) {
-            throw new RuntimeException("{$file} does not parse: {$e->getMessage()}", 0, $e);
-        }
         if (!is_array($config) || !array_key_exists('splits', $config)) {
             throw new RuntimeException("{$file} has no splits");
         }
@@ -105,11 +132,11 @@ final class MonorepoCheckout
             if (!is_string($target)) {
                 throw new RuntimeException("{$file} split {$number} has no target");
             }
-            //eg https://${GH_TOKEN}@github.com/opentelemetry-php/api.git
-            if (preg_match('#([^/:@]+)/([^/]+?)(?:\.git)?/?$#', $target, $matches) !== 1) {
+            $repository = self::repositoryOf($target);
+            if ($repository === null) {
                 throw new RuntimeException("{$file} split {$number} target \"{$target}\" does not name a repository");
             }
-            $splits[trim($prefix, '/')] = "{$matches[1]}/{$matches[2]}";
+            $splits[trim($prefix, '/')] = $repository;
         }
 
         return $splits;

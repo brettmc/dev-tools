@@ -83,6 +83,11 @@ bin/otel release:prep --path=../opentelemetry-php --dry-run
 `--path` defaults to the working directory, except for `release:run`, which requires it. It needs PHP
 8.2 or later.
 
+The checkout's `.gitsplit.yml` says which monorepo it is, through its `project_url`. A fork's checkout
+names the upstream repository too, and the commands that tag or prepare a release check the checkout
+against that repository's branch on GitHub. A root `composer.json` is optional. Core's carries the
+`replace` entries and the `extra.spi` providers that `release:prep` and `packages:spi:check` read.
+
 ### Create a GitHub token
 
 `release:run` and `tag:pecl` need a token that can write to the repositories they tag. You need to be
@@ -234,9 +239,9 @@ A package with changes gets no suggestion when its latest tag is a pre-release o
 These are listed after the table. Choose a version at the prompt or with `--set`.
 
 The checkout needs `composer install` even for `--dry-run`, as the `#[PackageDependency]` attributes
-are read through its autoloader. A checkout whose root `composer.json` has no `extra.spi`, such as
-contrib, has no attributes to read, so it needs no install. Only the latest-release lookups go to
-GitHub.
+are read through its autoloader. A checkout with no root `composer.json`, or one without `extra.spi`,
+such as contrib, has no attributes to read, so it needs no install. Only the latest-release lookups
+go to GitHub.
 
 ### Start from an up-to-date checkout
 
@@ -269,7 +274,7 @@ Then it sets the root `composer.json` `replace` entry of every split package to 
 whether or not it is released this round. Inside the monorepo, composer resolves a split package to
 its `replace` entry, so that is the version a `#[PackageDependency]` is checked against at runtime.
 Entries with no split are left alone. Only the values are rewritten, so the rest of each file is
-untouched.
+untouched. A checkout with no root `composer.json` has no `replace` to update.
 
 A skipped package keeps its changelog and alias, and is reported as "skipped by --set".
 `--dry-run` reports every change without writing it.

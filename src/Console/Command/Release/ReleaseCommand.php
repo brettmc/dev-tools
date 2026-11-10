@@ -298,19 +298,8 @@ class ReleaseCommand extends AbstractReleaseCommand
         if ($monorepo === null) {
             return null;
         }
-        $upstream ??= $this->upstream($path, $monorepo);
+        $upstream = $this->upstream($path, $monorepo, $upstream);
         if ($upstream === null) {
-            return null;
-        }
-        if ($monorepo->name !== self::ROOT_PACKAGES[$upstream]) {
-            $this->output->writeln(sprintf(
-                '<error>%s is not a checkout of %s: its composer.json is named "%s", not "%s"</error>',
-                $path,
-                $upstream,
-                $monorepo->name,
-                self::ROOT_PACKAGES[$upstream],
-            ));
-
             return null;
         }
 

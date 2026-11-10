@@ -60,11 +60,18 @@ class PackageDependencyReaderTest extends TestCase
         $this->assertEquals(new ProviderDependencies(), $result);
     }
 
+    public function test_checkout_without_a_composer_json_needs_no_autoloader(): void
+    {
+        $result = (new PackageDependencyReader())->read(__DIR__ . '/_files');
+
+        $this->assertEquals(new ProviderDependencies(), $result);
+    }
+
     public function test_fails_without_an_installed_vendor_directory(): void
     {
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('composer install');
 
-        (new PackageDependencyReader())->read(__DIR__);
+        (new PackageDependencyReader())->read(__DIR__ . '/_files/without-vendor');
     }
 }

@@ -194,13 +194,18 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         if ($monorepo === null) {
             return Command::FAILURE;
         }
-        $found = $this->split_repositories($monorepo, $monorepo->name, $input->getOption('filter'));
+        $upstream = $this->upstream($path, $monorepo);
+        if ($upstream === null) {
+            return Command::FAILURE;
+        }
+        $this->upstream = $upstream;
+        $found = $this->split_repositories($monorepo, $upstream, $input->getOption('filter'));
         if (count($found) === 0) {
             $output->writeln('<error>No packages found!</error>');
 
             return Command::FAILURE;
         }
-        if (!$this->includes_branch_tip($path, $monorepo)) {
+        if (!$this->includes_branch_tip($path, $upstream)) {
             return Command::FAILURE;
         }
         $entries = [];
@@ -308,14 +313,8 @@ class ReleasePrepCommand extends AbstractReleaseCommand
      *
      * @return bool false when the prep should stop, having said why
      */
-    private function includes_branch_tip(string $path, MonorepoCheckout $monorepo): bool
+    private function includes_branch_tip(string $path, string $upstream): bool
     {
-        $upstream = $this->upstream($path, $monorepo);
-        if ($upstream === null) {
-            return false;
-        }
-        $this->upstream = $upstream;
-
         try {
             $tip = $this->branch_tip($upstream);
         } catch (\Exception $e) {
@@ -449,6 +448,10 @@ class ReleasePrepCommand extends AbstractReleaseCommand
      */
     private function update_replace(string $path, array $aliases, bool $dryRun): bool
     {
+        if (!is_file($path . '/' . self::COMPOSER_FILE)) {
+            return false;
+        }
+
         try {
             /** @var array<string, string> $versions */
             $versions = array_filter([...MonorepoCheckout::read($path)->aliases, ...$aliases], 'is_string');
