@@ -1,6 +1,7 @@
 <?xml version="1.0"?>
 <psalm
     errorLevel="3"
+    errorBaseline="psalm-baseline.xml"
     cacheDirectory="var/cache/psalm"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xmlns="https://getpsalm.org/schema/config"
@@ -14,67 +15,4 @@
     <plugins>
         <pluginClass class="Psalm\PhpUnitPlugin\Plugin"/>
     </plugins>
-    <issueHandlers>
-        <PossiblyUnusedMethod>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyUnusedMethod>
-        <UnusedClass>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </UnusedClass>
-        <FalsableReturnStatement>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </FalsableReturnStatement>
-        <PossiblyUnusedReturnValue>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyUnusedReturnValue>
-        <MissingTemplateParam>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </MissingTemplateParam>
-        <PossiblyUnusedParam>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyUnusedParam>
-        <PossiblyFalseArgument>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyFalseArgument>
-        <PossiblyFalseOperand>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyFalseOperand>
-        <PossiblyNullPropertyAssignment>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyNullPropertyAssignment>
-        <PossiblyNullPropertyFetch>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyNullPropertyFetch>
-        <PossiblyNullReference>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </PossiblyNullReference>
-        <ArgumentTypeCoercion>
-            <errorLevel type="suppress">
-                <directory name="src"/>
-            </errorLevel>
-        </ArgumentTypeCoercion>
-
-    </issueHandlers>
 </psalm>

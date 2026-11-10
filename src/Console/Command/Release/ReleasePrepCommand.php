@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace OpenTelemetry\DevTools\Console\Command\Release;
 
 use Composer\Semver\VersionParser;
-use Http\Discovery\Psr18ClientDiscovery;
 use InvalidArgumentException;
+use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\PrepEntry;
+use OpenTelemetry\DevTools\Package\Changelog\ChangelogException;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogParser;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogRewriter;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogSection;
@@ -22,16 +23,15 @@ use OpenTelemetry\DevTools\Package\Release\PackageRelease;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderChecker;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
 use OpenTelemetry\DevTools\Package\Spi\PackageDependencyReader;
-use Psr\Http\Client\ClientExceptionInterface;
-use Psr\Http\Client\ClientInterface;
+use OpenTelemetry\DevTools\Util\Path;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Yaml\Parser;
 
 /**
  * Suggest the next version of each package of a monorepo checkout from its CHANGELOG.md, and
@@ -46,7 +46,6 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
     private const BRANCH_KEY = 'dev-main';
 
-    private ?ClientInterface $clientOverride;
     private ChangelogParser $changelogParser;
     private ChangelogRewriter $rewriter;
     private VersionSuggester $suggester;
@@ -64,12 +63,9 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     private array $entries = [];
     private ReleaseOrderReport $order;
 
-    public function __construct(?ClientInterface $client = null, ?PackageDependencyReader $dependencyReader = null, ?GitRunner $git = null)
+    public function __construct(?GitHub $github = null, ?PackageDependencyReader $dependencyReader = null, ?GitRunner $git = null)
     {
-        parent::__construct();
-        //held aside rather than assigned to $this->client, so that discovery stays lazy: it throws
-        //when no PSR-18 client is installed, which should not happen merely by listing the commands
-        $this->clientOverride = $client;
+        parent::__construct($github);
         $this->changelogParser = new ChangelogParser();
         $this->rewriter = new ChangelogRewriter();
         $this->suggester = new VersionSuggester();
@@ -116,7 +112,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
         try {
             $status = $this->prepare($input, $errors, false);
-        } catch (\Exception|ClientExceptionInterface $e) {
+        } catch (\Throwable $e) {
             //the JSON is printed however the prep ends, so a workflow can always parse it
             $errors->writeln("<error>{$e->getMessage()}</error>");
             $status = Command::FAILURE;
@@ -133,7 +129,10 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $this->token = $this->token($input);
         $dryRun = $this->dry_run = (bool) $input->getOption('dry-run');
         $this->source_branch = $input->getOption('branch') ?? 'main';
-        $path = rtrim($input->getOption('path') ?? (string) getcwd(), '/');
+        $path = $this->checkoutPath($input->getOption('path'));
+        if ($path === null) {
+            return Command::FAILURE;
+        }
 
         $date = $input->getOption('date') ?? date('Y-m-d');
         $parsedDate = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
@@ -147,31 +146,23 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             return Command::FAILURE;
         }
 
-        $this->client = $this->clientOverride ?? Psr18ClientDiscovery::find();
-        $this->parser = new Parser();
-
-        try {
-            $found = $this->find_split_packages($path, $input->getOption('filter'));
-        } catch (\Exception $e) {
-            $output->writeln("<error>{$e->getCode()} {$e->getMessage()}</error>");
-
+        $monorepo = $this->read_monorepo($path);
+        if ($monorepo === null) {
             return Command::FAILURE;
         }
-        if ($found === null) {
-            return Command::FAILURE;
-        }
+        $found = $this->split_repositories($monorepo, $monorepo->name, $input->getOption('filter'));
         if (count($found) === 0) {
             $output->writeln('<error>No packages found!</error>');
 
             return Command::FAILURE;
         }
-        if (!$this->includes_branch_tip($path)) {
+        if (!$this->includes_branch_tip($path, $monorepo)) {
             return Command::FAILURE;
         }
         $entries = [];
         foreach ($found as $repository) {
             $entry = new PrepEntry($repository);
-            $this->read_composer($entry, $path);
+            [$entry->package, $entry->composer] = $this->split_composer($path, $entry->repository);
             $entries[] = $entry;
         }
         $unknown = array_diff(array_keys($overrides), $this->known_names($entries));
@@ -253,6 +244,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             'version' => $entry->version,
             'reason' => $entry->reason,
             'warnings' => $entry->warnings,
+            'undecided' => $entry->undecided && $entry->version === null,
         ], $this->entries);
 
         return json_encode([
@@ -271,18 +263,10 @@ class ReleasePrepCommand extends AbstractReleaseCommand
      *
      * @return bool false when the prep should stop, having said why
      */
-    private function includes_branch_tip(string $path): bool
+    private function includes_branch_tip(string $path, MonorepoCheckout $monorepo): bool
     {
-        $name = $this->root_package_name($path);
-        $upstream = array_search($name, self::ROOT_PACKAGES, true);
-        if ($upstream === false) {
-            $this->output->writeln(sprintf(
-                '<error>%s is not a checkout of %s: its composer.json is named "%s"</error>',
-                $path,
-                implode(' or ', array_keys(self::ROOT_PACKAGES)),
-                $name,
-            ));
-
+        $upstream = $this->upstream($path, $monorepo);
+        if ($upstream === null) {
             return false;
         }
 
@@ -357,20 +341,6 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     }
 
     /**
-     * Fill in the package name and composer.json of the split. The name is not always derivable from
-     * the name of the repository it is split to, so it falls back to that guess only when there is no
-     * composer.json.
-     */
-    private function read_composer(PrepEntry $entry, string $path): void
-    {
-        $file = $this->contained_file($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
-        $json = $file !== null && is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
-        $entry->composer = is_array($json) ? $json : [];
-        $name = $entry->composer['name'] ?? null;
-        $entry->package = is_string($name) ? $name : "open-telemetry/{$entry->repository->downstream->project}";
-    }
-
-    /**
      * Attach the `#[PackageDependency]` constraints of the checkout's service providers to the package
      * each provider lives in.
      *
@@ -397,7 +367,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $version = (string) $entry->version;
         $alias = BranchAliasUpdater::aliasForVersion($version);
         $current = $entry->composer['extra']['branch-alias'][self::BRANCH_KEY] ?? null;
-        $file = $this->contained_file($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
+        $file = Path::contained($path, $entry->repository->upstream->path, self::COMPOSER_FILE);
         if ($alias === null || $file === null || !is_string($current) || BranchAliasUpdater::covers($current, $version)) {
             return null;
         }
@@ -494,7 +464,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         $project = $repository->downstream->project;
         $prefix = $repository->upstream->path;
 
-        $file = $this->contained_file($path, $prefix, self::CHANGELOG_FILE);
+        $file = Path::contained($path, $prefix, self::CHANGELOG_FILE);
         if ($file === null) {
             $this->output->writeln(sprintf('<error>[%s] split prefix "%s" resolves outside %s, refusing to write</error>', $entry->label(), $prefix, $path));
             $this->failures++;
@@ -510,7 +480,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
         try {
             $entry->changes = $this->changelogParser->parseUnreleased((string) file_get_contents($file));
-        } catch (InvalidArgumentException $e) {
+        } catch (ChangelogException $e) {
             $this->output->writeln("<error>[{$entry->label()}] {$prefix}/" . self::CHANGELOG_FILE . ": {$e->getMessage()}</error>");
             $this->failures++;
             $entry->reason = 'error, ' . $e->getMessage();
@@ -611,6 +581,16 @@ class ReleasePrepCommand extends AbstractReleaseCommand
                 $this->output->writeln('- ' . str_replace("\n", "\n  ", $warning));
             }
         }
+        $undecided = array_filter($entries, static fn (PrepEntry $entry): bool => $entry->undecided);
+        if ($undecided !== []) {
+            $this->output->writeln('');
+            $this->output->writeln($markdown
+                ? '**No version suggested**, choose one with `--set=<package>=<version>`:'
+                : OutputFormatter::escape('No version suggested, choose one with --set=<package>=<version>:'));
+            foreach ($undecided as $entry) {
+                $this->output->writeln('- ' . $entry->label());
+            }
+        }
     }
 
     /**
@@ -651,7 +631,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
 
         try {
             $updated = $this->rewriter->release((string) file_get_contents($file), (string) $entry->version, $date);
-        } catch (InvalidArgumentException $e) {
+        } catch (ChangelogException $e) {
             $this->output->writeln("<error>[{$entry->label()}] {$e->getMessage()}</error>");
             $this->failures++;
 

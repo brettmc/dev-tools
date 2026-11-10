@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Console\Command;
 
+use OpenTelemetry\DevTools\Util\Path;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -51,6 +52,20 @@ class BaseCommand extends Command
     {
         $this->registerInput($input);
         $this->registerOutput($output);
+    }
+
+    /**
+     * The checkout --path names, by default the working directory, made absolute; null, having
+     * said so, when it is not a directory.
+     */
+    protected function checkoutPath(?string $path): ?string
+    {
+        $directory = Path::directory($path);
+        if ($directory === null) {
+            $this->output->writeln("<error>--path {$path} is not a directory</error>");
+        }
+
+        return $directory;
     }
 
     protected function writeTitle(): void

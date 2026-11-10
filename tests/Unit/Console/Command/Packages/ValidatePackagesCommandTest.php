@@ -4,10 +4,7 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\DevTools\Tests\Unit\Console\Command\Packages;
 
-use Composer\Util\Filesystem;
 use OpenTelemetry\DevTools\Console\Command\Packages\ValidatePackagesCommand;
-use OpenTelemetry\DevTools\Package\Composer\ConfigResolverInterface;
-use OpenTelemetry\DevTools\Util\WorkingDirectoryResolver;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
@@ -17,115 +14,153 @@ use Symfony\Component\Console\Tester\CommandTester;
  */
 class ValidatePackagesCommandTest extends TestCase
 {
-    private const DIRECTORY = __DIR__ . '/_files';
     private const VALID_COMPOSER_FILE = __DIR__ . '/_files/composer.valid.json';
     private const INVALID_COMPOSER_FILE = __DIR__ . '/_files/composer.invalid.json';
     private const BROKEN_COMPOSER_FILE = __DIR__ . '/_files/composer.broken.json';
 
-    public function test_execute_valid(): void
+    private string $root;
+
+    #[\Override]
+    public function setUp(): void
     {
-        $paths = (static function () {
-            yield self::DIRECTORY => self::VALID_COMPOSER_FILE;
-            yield self::DIRECTORY => self::VALID_COMPOSER_FILE;
-            yield self::DIRECTORY => self::VALID_COMPOSER_FILE;
-        })();
-
-        $commandTester = new CommandTester(
-            $this->createValidatePackagesCommand(
-                $paths
-            )
-        );
-        $commandTester->execute([]);
-
-        $this->assertSame(
-            Command::SUCCESS,
-            $commandTester->getStatusCode()
-        );
+        $this->root = sys_get_temp_dir() . '/validate-packages-' . bin2hex(random_bytes(4));
+        mkdir($this->root);
+        file_put_contents("{$this->root}/composer.json", '{"name":"open-telemetry/opentelemetry"}');
     }
 
-    public function test_execute_valid_relative(): void
+    #[\Override]
+    public function tearDown(): void
     {
-        $paths = (static function () {
-            $fs = new Filesystem();
-            $cwd = WorkingDirectoryResolver::create()->resolve();
+        exec('rm -rf ' . escapeshellarg($this->root));
+    }
 
-            yield self::DIRECTORY => self::VALID_COMPOSER_FILE;
-            yield $fs->findShortestPath($cwd, self::DIRECTORY, true) => $fs->findShortestPath($cwd, self::VALID_COMPOSER_FILE, true);
-            yield self::DIRECTORY => self::VALID_COMPOSER_FILE;
-        })();
+    public function test_execute_valid(): void
+    {
+        $this->checkout(['src/A' => self::VALID_COMPOSER_FILE, 'src/B' => self::VALID_COMPOSER_FILE, 'src/C' => self::VALID_COMPOSER_FILE]);
 
-        $commandTester = new CommandTester(
-            $this->createValidatePackagesCommand(
-                $paths
-            )
-        );
-        $commandTester->execute([]);
+        $commandTester = $this->execute();
 
-        $this->assertSame(
-            Command::SUCCESS,
-            $commandTester->getStatusCode()
-        );
+        $this->assertSame(Command::SUCCESS, $commandTester->getStatusCode());
+        foreach (['A', 'B', 'C'] as $package) {
+            $this->assertStringContainsString("Validating: src/{$package}/composer.json", $commandTester->getDisplay());
+        }
+    }
+
+    public function test_execute_from_the_working_directory(): void
+    {
+        $this->checkout(['src/A/' => self::VALID_COMPOSER_FILE]);
+        $cwd = (string) getcwd();
+        chdir($this->root);
+
+        try {
+            $commandTester = new CommandTester(new ValidatePackagesCommand());
+            $commandTester->execute([]);
+        } finally {
+            chdir($cwd);
+        }
+
+        $this->assertSame(Command::SUCCESS, $commandTester->getStatusCode());
+        $this->assertStringContainsString('Validating composer files in: ' . realpath($this->root), $commandTester->getDisplay());
+        $this->assertStringContainsString('Validating: src/A/composer.json', $commandTester->getDisplay());
+    }
+
+    public function test_execute_from_a_relative_root(): void
+    {
+        $this->checkout(['src/A' => self::VALID_COMPOSER_FILE]);
+        $cwd = (string) getcwd();
+        chdir($this->root);
+
+        try {
+            $commandTester = new CommandTester(new ValidatePackagesCommand('.'));
+            $commandTester->execute([]);
+        } finally {
+            chdir($cwd);
+        }
+
+        $this->assertSame(Command::SUCCESS, $commandTester->getStatusCode(), $commandTester->getDisplay());
+        $this->assertStringContainsString('Validating composer files in: ' . realpath($this->root), $commandTester->getDisplay());
     }
 
     public function test_execute_invalid(): void
     {
-        $paths = (static function () {
-            yield self::DIRECTORY => self::VALID_COMPOSER_FILE;
-            yield self::DIRECTORY => self::INVALID_COMPOSER_FILE;
-            yield self::DIRECTORY => self::VALID_COMPOSER_FILE;
-        })();
+        $this->checkout(['src/A' => self::VALID_COMPOSER_FILE, 'src/B' => self::INVALID_COMPOSER_FILE, 'src/C' => self::VALID_COMPOSER_FILE]);
 
-        $commandTester = new CommandTester(
-            $this->createValidatePackagesCommand(
-                $paths
-            )
-        );
-        $commandTester->execute([]);
+        $this->assertSame(Command::FAILURE, $this->execute()->getStatusCode());
+    }
 
-        $this->assertSame(
-            Command::FAILURE,
-            $commandTester->getStatusCode()
-        );
+    public function test_execute_invalid_shows_why(): void
+    {
+        $this->checkout(['src/A' => self::INVALID_COMPOSER_FILE]);
+
+        $this->assertStringContainsString('The property description is required', $this->execute()->getDisplay());
+    }
+
+    public function test_execute_invalid_formats_composer_styles(): void
+    {
+        $this->checkout(['src/A' => self::INVALID_COMPOSER_FILE]);
+
+        $this->assertStringNotContainsString('<warning>', $this->execute()->getDisplay());
     }
 
     public function test_execute_broken(): void
     {
-        $paths = (static function () {
-            yield self::DIRECTORY => self::VALID_COMPOSER_FILE;
-            yield self::DIRECTORY => self::BROKEN_COMPOSER_FILE;
-            yield self::DIRECTORY => self::VALID_COMPOSER_FILE;
-        })();
+        $this->checkout(['src/A' => self::VALID_COMPOSER_FILE, 'src/B' => self::BROKEN_COMPOSER_FILE, 'src/C' => self::VALID_COMPOSER_FILE]);
 
-        $commandTester = new CommandTester(
-            $this->createValidatePackagesCommand(
-                $paths
-            )
-        );
-        $commandTester->execute([]);
+        $this->assertSame(Command::FAILURE, $this->execute()->getStatusCode());
+    }
 
-        $this->assertSame(
-            Command::FAILURE,
-            $commandTester->getStatusCode()
+    public function test_split_without_a_composer_file_fails(): void
+    {
+        $this->checkout(['src/A' => self::VALID_COMPOSER_FILE]);
+        file_put_contents(
+            "{$this->root}/.gitsplit.yml",
+            "\n  - prefix: \"src/Gone\"\n    target: \"https://github.com/opentelemetry-php/gone.git\"\n",
+            FILE_APPEND
         );
+
+        $this->assertSame(Command::FAILURE, $this->execute()->getStatusCode());
+    }
+
+    public function test_split_without_a_target_fails_naming_it(): void
+    {
+        $this->checkout(['src/A' => self::VALID_COMPOSER_FILE]);
+        file_put_contents("{$this->root}/.gitsplit.yml", "splits:\n  - prefix: \"src/A\"\n");
+
+        $commandTester = $this->execute();
+
+        $this->assertSame(Command::FAILURE, $commandTester->getStatusCode());
+        $this->assertStringContainsString('split 1 has no target', $commandTester->getDisplay());
+    }
+
+    public function test_directory_that_is_not_a_checkout_fails(): void
+    {
+        unlink("{$this->root}/composer.json");
+
+        $commandTester = $this->execute();
+
+        $this->assertSame(Command::FAILURE, $commandTester->getStatusCode());
+        $this->assertStringContainsString('is not a monorepo checkout', $commandTester->getDisplay());
     }
 
     /**
-     * @psalm-suppress PossiblyInvalidArgument
+     * @param array<string, string> $splits fixture to copy in as each split's composer.json, by prefix
      */
-    private function createValidatePackagesCommand(iterable $paths): ValidatePackagesCommand
+    private function checkout(array $splits): void
     {
-        return new \OpenTelemetry\DevTools\Console\Command\Packages\ValidatePackagesCommand(
-            $this->createConfigResolverMock($paths)
-        );
+        $yaml = "splits:\n";
+        foreach ($splits as $prefix => $composerFile) {
+            $yaml .= "  - prefix: \"{$prefix}\"\n    target: \"https://\${GH_TOKEN}@github.com/opentelemetry-php/x.git\"\n";
+            mkdir("{$this->root}/{$prefix}", 0o777, true);
+            copy($composerFile, "{$this->root}/{$prefix}/composer.json");
+        }
+        file_put_contents("{$this->root}/.gitsplit.yml", $yaml);
     }
 
-    private function createConfigResolverMock(iterable $paths): ConfigResolverInterface
+    private function execute(): CommandTester
     {
-        $mock = $this->createMock(ConfigResolverInterface::class);
+        $commandTester = new CommandTester(new ValidatePackagesCommand($this->root));
+        $commandTester->execute([]);
 
-        $mock->method('resolve')
-            ->willReturn($paths);
-
-        return $mock;
+        return $commandTester;
     }
 }

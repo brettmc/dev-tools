@@ -37,6 +37,21 @@ class PackageDependencyReaderTest extends TestCase
         $this->assertSame(['Fixture\MissingProvider'], $result->missing);
     }
 
+    public function test_reads_a_relative_path_from_another_working_directory(): void
+    {
+        $cwd = (string) getcwd();
+        chdir(dirname(self::MONOREPO));
+
+        try {
+            $result = (new PackageDependencyReader())->read(basename(self::MONOREPO));
+        } finally {
+            chdir($cwd);
+        }
+
+        $this->assertCount(3, $result->dependencies);
+        $this->assertSame('src/ProviderWithDependencies.php', $result->dependencies[0]->file);
+    }
+
     public function test_fails_without_an_installed_vendor_directory(): void
     {
         $this->expectException(RuntimeException::class);

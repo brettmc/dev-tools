@@ -10,6 +10,8 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * @covers \OpenTelemetry\DevTools\Package\Changelog\ChangelogRewriter
+ * @covers \OpenTelemetry\DevTools\Package\Changelog\ChangelogException
+ * @covers \OpenTelemetry\DevTools\Package\Changelog\CodeFences
  */
 class ChangelogRewriterTest extends TestCase
 {
@@ -73,6 +75,22 @@ class ChangelogRewriterTest extends TestCase
         $result = $this->rewriter->release("## Unreleased\n\n- a\n\n## Unreleased\n", '1.0.1', '2026-11-03');
 
         $this->assertSame("## Unreleased\n\n## 1.0.1 - 2026-11-03\n\n- a\n\n## Unreleased\n", $result);
+    }
+
+    public function test_unreleased_as_the_last_line_is_released(): void
+    {
+        $result = $this->rewriter->release(self::HEADER . '## Unreleased', '1.0.1', '2026-11-03');
+
+        $this->assertSame(self::HEADER . "## Unreleased\n\n## 1.0.1 - 2026-11-03", $result);
+    }
+
+    public function test_heading_in_a_code_block_is_not_changed(): void
+    {
+        $code = "Write entries like this:\n\n```md\n## Unreleased\n\n- An entry.\n```\n\n";
+
+        $result = $this->rewriter->release($code . "## Unreleased\n\n" . self::BODY, '1.0.1', '2026-11-03');
+
+        $this->assertSame($code . "## Unreleased\n\n## 1.0.1 - 2026-11-03\n\n" . self::BODY, $result);
     }
 
     public function test_missing_unreleased_heading_is_an_error(): void
