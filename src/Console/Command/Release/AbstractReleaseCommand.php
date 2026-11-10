@@ -215,8 +215,8 @@ abstract class AbstractReleaseCommand extends BaseCommand
     }
 
     /**
-     * Print the order to tag packages that need each other's new versions, and warn about constraints
-     * the new versions break. Silent when there is nothing to say.
+     * Print the order to tag the packages being released in, and warn about constraints the new
+     * versions break. Silent when there is nothing to say.
      */
     protected function print_order(ReleaseOrderReport $report): void
     {

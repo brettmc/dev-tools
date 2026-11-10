@@ -23,14 +23,14 @@ class ReleaseOrderCheckerTest extends TestCase
         $this->checker = new ReleaseOrderChecker();
     }
 
-    public function test_packages_that_do_not_depend_on_each_other_have_no_order_and_no_warnings(): void
+    public function test_packages_that_do_not_depend_on_each_other_keep_their_order_and_have_no_warnings(): void
     {
         $report = $this->checker->check([
             new PackageRelease('o/api', '1.11.0', '1.10.1'),
             new PackageRelease('o/sdk', '1.16.0', '1.15.0', ['php' => '^8.1']),
         ]);
 
-        $this->assertSame([], $report->order);
+        $this->assertSame(['o/api', 'o/sdk'], $report->order);
         $this->assertSame([], $report->warnings);
     }
 
@@ -52,7 +52,7 @@ class ReleaseOrderCheckerTest extends TestCase
             new PackageRelease('o/api', '1.11.0', '1.10.1'),
         ]);
 
-        $this->assertSame([], $report->order);
+        $this->assertSame(['o/sdk', 'o/api'], $report->order);
     }
 
     public function test_order_follows_chains(): void
@@ -64,6 +64,28 @@ class ReleaseOrderCheckerTest extends TestCase
         ]);
 
         $this->assertSame(['o/api', 'o/sdk', 'o/exporter'], $report->order);
+    }
+
+    public function test_packages_without_an_order_are_tagged_after_those_with_one_in_their_given_order(): void
+    {
+        $report = $this->checker->check([
+            new PackageRelease('o/b3', '1.4.0', '1.3.0'),
+            new PackageRelease('o/sdk', '1.17.0', '1.16.1', ['o/api' => '^1.11']),
+            new PackageRelease('o/context', '1.7.0', '1.6.0'),
+            new PackageRelease('o/api', '1.11.0', '1.10.1'),
+        ]);
+
+        $this->assertSame(['o/api', 'o/sdk', 'o/b3', 'o/context'], $report->order);
+    }
+
+    public function test_packages_not_being_released_are_not_in_the_order(): void
+    {
+        $report = $this->checker->check([
+            new PackageRelease('o/context', null, '1.6.0'),
+            new PackageRelease('o/api', '1.11.0', '1.10.1'),
+        ]);
+
+        $this->assertSame(['o/api'], $report->order);
     }
 
     public function test_package_dependency_only_the_new_version_satisfies_orders_the_dependency_first(): void
@@ -96,7 +118,7 @@ class ReleaseOrderCheckerTest extends TestCase
             new PackageRelease('o/sdk-configuration', '0.10.0', '0.9.0', [], [], ['o/sdk-configuration' => ['^0.10']]),
         ]);
 
-        $this->assertSame([], $report->order);
+        $this->assertSame(['o/sdk-configuration'], $report->order);
         $this->assertSame([], $report->warnings);
     }
 
@@ -161,7 +183,7 @@ class ReleaseOrderCheckerTest extends TestCase
             new PackageRelease('o/api', '1.11.0', '1.10.1'),
         ]);
 
-        $this->assertSame([], $report->order);
+        $this->assertSame(['o/api'], $report->order);
     }
 
     public function test_a_cycle_is_reported_and_every_package_is_still_listed(): void
@@ -197,7 +219,7 @@ class ReleaseOrderCheckerTest extends TestCase
         ]);
 
         $this->assertSame([], $report->warnings);
-        $this->assertSame([], $report->order);
+        $this->assertSame(['o/sdk', 'o/api'], $report->order);
     }
 
     public function test_dev_branch_constraint_is_ignored(): void

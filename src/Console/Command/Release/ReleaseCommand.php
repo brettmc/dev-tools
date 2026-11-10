@@ -466,9 +466,9 @@ class ReleaseCommand extends AbstractReleaseCommand
     }
 
     /**
-     * Put the packages of the checkout that need each other's new versions into tag order, through
-     * composer constraints and `#[PackageDependency]` alike. The new version is the one the changelog
-     * suggests, as that is what release:prep wrote. Other packages keep their place.
+     * Put the packages of the checkout being released into tag order, through composer constraints
+     * and `#[PackageDependency]` alike. The new version is the one the changelog suggests, as that is
+     * what release:prep wrote. Packages from other repositories, and those not released, keep their place.
      *
      * @param array<Repository> $repositories
      * @param array{path: string, upstream: string, monorepo: MonorepoCheckout, head: ?string, dependencies: ProviderDependencies} $checkout

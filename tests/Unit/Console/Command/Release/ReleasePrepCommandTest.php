@@ -680,12 +680,12 @@ class ReleasePrepCommandTest extends TestCase
         $this->assertStringContainsString('open-telemetry/exporter requires open-telemetry/sdk ^1.16, which excludes 2.0.0', $this->tester->getDisplay());
     }
 
-    public function test_no_tag_order_without_dependencies_between_packages(): void
+    public function test_tag_order_lists_packages_without_dependencies_between_them(): void
     {
         $this->monorepo(['src/API' => ['api', self::ADDED]]);
 
         $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true]));
-        $this->assertStringNotContainsString('Tag in this order', $this->tester->getDisplay());
+        $this->assertStringContainsString('Tag in this order: open-telemetry/api', $this->tester->getDisplay());
     }
 
     public function test_tag_order_follows_package_dependency_attributes(): void
