@@ -6,9 +6,11 @@ namespace OpenTelemetry\DevTools\Console\Command\Release;
 
 use Composer\Semver\VersionParser;
 use InvalidArgumentException;
+use OpenTelemetry\DevTools\Console\Release\Dashboard;
 use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\PrepEntry;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogException;
+use OpenTelemetry\DevTools\Package\Changelog\ChangelogLinks;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogParser;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogRewriter;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogSection;
@@ -62,6 +64,9 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     /** @var array<PrepEntry> the assessed packages, for the JSON report */
     private array $entries = [];
     private ReleaseOrderReport $order;
+    /** the checkout, and the upstream repository it is of, once read */
+    private string $path = '';
+    private string $upstream = '';
 
     public function __construct(?GitHub $github = null, ?PackageDependencyReader $dependencyReader = null, ?GitRunner $git = null)
     {
@@ -92,7 +97,8 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             ->addOption('dry-run', null, InputOption::VALUE_NONE, 'report the suggestions without writing anything')
             ->addOption('date', null, InputOption::VALUE_OPTIONAL, 'release date, YYYY-MM-DD (default: today)')
             ->addOption('set', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'release a package as a given version, or not at all, <package>=<version|skip>')
-            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'report format: text, markdown, or json on stdout with the rest on stderr', 'text')
+            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'report format: text, markdown, json (on stdout with the rest on stderr), or dashboard (an issue body on stdout, needs --dry-run)', 'text')
+            ->addOption('tracker', null, InputOption::VALUE_REQUIRED, 'with --format=dashboard, the <org>/<project> whose issue tracker holds the dashboard (default: the monorepo)')
         ;
     }
 
@@ -100,15 +106,18 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $format = $input->getOption('format');
-        if (!in_array($format, ['text', 'markdown', 'json'], true)) {
-            $output->writeln('<error>--format must be text, markdown or json</error>');
+        if (!in_array($format, ['text', 'markdown', 'json', 'dashboard'], true)) {
+            $output->writeln('<error>--format must be text, markdown, json or dashboard</error>');
 
             return Command::FAILURE;
         }
-        if ($format !== 'json') {
+        if ($format === 'text' || $format === 'markdown') {
             return $this->prepare($input, $output, $format === 'markdown');
         }
         $errors = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
+        if ($format === 'dashboard') {
+            return $this->dashboard($input, $output, $errors);
+        }
 
         try {
             $status = $this->prepare($input, $errors, false);
@@ -122,6 +131,40 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         return $status;
     }
 
+    /**
+     * Print the body of a release dashboard issue on $output, and only when the prep succeeds, so a
+     * failed run never replaces a good body with a partial one.
+     */
+    private function dashboard(InputInterface $input, OutputInterface $output, OutputInterface $errors): int
+    {
+        if (!$input->getOption('dry-run')) {
+            $errors->writeln('<error>--format=dashboard needs --dry-run, as it reports what would be released</error>');
+
+            return Command::FAILURE;
+        }
+        $tracker = $input->getOption('tracker');
+        if ($tracker !== null && preg_match('#^[\w.-]+/[\w.-]+$#', $tracker) !== 1) {
+            $errors->writeln('<error>--tracker must be <org>/<project>, such as open-telemetry/opentelemetry-php</error>');
+
+            return Command::FAILURE;
+        }
+
+        try {
+            if ($this->prepare($input, $errors, false) !== Command::SUCCESS) {
+                return Command::FAILURE;
+            }
+            $body = (new Dashboard($this->upstream, $this->source_branch, $this->git->head($this->path), $tracker))
+                ->render($this->entries, $this->order);
+        } catch (\Throwable $e) {
+            $errors->writeln("<error>{$e->getMessage()}</error>");
+
+            return Command::FAILURE;
+        }
+        $output->write($body, false, OutputInterface::OUTPUT_RAW);
+
+        return Command::SUCCESS;
+    }
+
     private function prepare(InputInterface $input, OutputInterface $output, bool $markdown): int
     {
         $this->registerInputAndOutput($input, $output);
@@ -133,6 +176,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         if ($path === null) {
             return Command::FAILURE;
         }
+        $this->path = $path;
 
         $date = $input->getOption('date') ?? date('Y-m-d');
         $parsedDate = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
@@ -245,6 +289,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             'reason' => $entry->reason,
             'warnings' => $entry->warnings,
             'undecided' => $entry->undecided && $entry->version === null,
+            'changes' => (object) ($entry->changes?->all() ?? []),
         ], $this->entries);
 
         return json_encode([
@@ -269,6 +314,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         if ($upstream === null) {
             return false;
         }
+        $this->upstream = $upstream;
 
         try {
             $tip = $this->branch_tip($upstream);
@@ -479,7 +525,9 @@ class ReleasePrepCommand extends AbstractReleaseCommand
         }
 
         try {
-            $entry->changes = $this->changelogParser->parseUnreleased((string) file_get_contents($file));
+            $changelog = (string) file_get_contents($file);
+            $entry->changes = $this->changelogParser->parseUnreleased($changelog);
+            $entry->links = new ChangelogLinks($changelog);
         } catch (ChangelogException $e) {
             $this->output->writeln("<error>[{$entry->label()}] {$prefix}/" . self::CHANGELOG_FILE . ": {$e->getMessage()}</error>");
             $this->failures++;
@@ -578,6 +626,8 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             $this->output->writeln('');
             $this->output->writeln($markdown ? "**{$entry->label()}**" : "<comment>{$entry->label()}: check before releasing</comment>");
             foreach ($entry->warnings as $warning) {
+                //a pull request body has no link definitions, so [#12] would show as written
+                $warning = $markdown ? ($entry->links?->inline($warning, $this->upstream) ?? $warning) : $warning;
                 $this->output->writeln('- ' . str_replace("\n", "\n  ", $warning));
             }
         }

@@ -61,6 +61,26 @@ class ChangelogParserTest extends TestCase
         $this->assertFalse($changes->isEmpty());
     }
 
+    public function test_all_entries_are_in_section_order_not_file_order(): void
+    {
+        $changes = $this->parser->parseUnreleased(self::HEADER . <<<'MD'
+            ## Unreleased
+
+            ### Fixed
+
+            - A bug.
+
+            ### Deprecated
+
+            ### Breaking changes
+
+            - Drop the old thing.
+
+            MD);
+
+        $this->assertSame(['Breaking changes' => ['Drop the old thing.'], 'Fixed' => ['A bug.']], $changes->all());
+    }
+
     public function test_wrapped_entry_is_one_entry(): void
     {
         $changes = $this->parser->parseUnreleased(self::HEADER . <<<'MD'
