@@ -286,8 +286,9 @@ Packages in a monorepo depend on each other's new versions. Once the versions ar
 in each `composer.json`, and the `#[PackageDependency]` attributes on the service providers each
 registers.
 
-- When a package needs another's new version (sdk `^1.16` needs api `1.11`, say), it prints the
-  order to tag them in.
+- It prints the order to tag the packages in. A package that needs another's new version (sdk
+  `^1.16` needs api `1.11`, say) comes after it. The packages that need no other's new version
+  follow, in `.gitsplit.yml` order.
 - When a `require` or `#[PackageDependency]` excludes another package's new version, or a `conflict`
   matches it, it names the package. This is how a forced major shows up: the dependents that need
   their constraint widened.
@@ -327,6 +328,7 @@ errors go to stderr. The object is printed however the prep ends.
   interaction it is not released, and the run still succeeds, so check for it before tagging.
 - `changes` holds the Unreleased entries by section, breaking changes first, as written in the
   changelog. It is empty for a package with no entries or no `CHANGELOG.md`.
+- `order` lists every package to be released, in the order to tag them.
 - `release` is true when anything is to be released.
 - `completed` is false, and the exit status non-zero, when the prep failed. The reason is on stderr.
   `packages` and `order` are empty if it failed before the packages were assessed.
@@ -401,8 +403,8 @@ latest release. The release notes are the body of that section, followed by a co
 with changes must have a `CHANGELOG.md` with a section for the version released. Otherwise the run
 stops, or warns with `--dry-run`.
 
-Packages that need each other's new versions are tagged in the order `release:prep` prints, and the
-order is printed. When a release makes a branch alias stale, the run ends with a reminder to run
+Packages are tagged in the order `release:prep` prints, and the order is printed. When a release
+makes a branch alias stale, the run ends with a reminder to run
 [update:branch-alias](#update-branch-aliases).
 
 ### Prepare the checkout

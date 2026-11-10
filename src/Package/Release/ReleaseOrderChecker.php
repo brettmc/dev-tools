@@ -15,6 +15,7 @@ use UnexpectedValueException;
  * - A package whose constraint is satisfied only by another package's new version has to be tagged
  *   after it. That includes the `#[PackageDependency]` on its service providers, which composer
  *   never sees: tagged first, the package installs, but the providers silently do not load.
+ *   The packages nothing orders follow, in the order given.
  * - A `require` that excludes the new version of a package, or a `conflict` that matches it, is
  *   warned about. This is how a forced major shows up: dependents that need their constraint widened.
  *
@@ -75,7 +76,9 @@ final class ReleaseOrderChecker
             $warnings[] = sprintf('circular dependency between %s, no safe tag order', implode(', ', $this->cycle($after, $stuck)));
         }
 
-        return new ReleaseOrderReport([...$order, ...$stuck], $warnings);
+        $free = array_values(array_diff(array_keys($released), $order, $stuck));
+
+        return new ReleaseOrderReport([...$order, ...$stuck, ...$free], $warnings);
     }
 
     /**

@@ -720,6 +720,23 @@ class ReleaseCommandTest extends TestCase
         $this->assertSame(['opentelemetry-php/api', 'opentelemetry-php/sdk'], array_keys($this->tags()));
     }
 
+    public function test_releases_outside_the_dependency_order_are_tagged_after_it(): void
+    {
+        $this->splits = [
+            'b3' => ['src/B3', '1.3.0', self::section('1.4.0')],
+            'sdk' => ['src/SDK', '1.15.0', self::section('1.16.0')],
+            'api' => ['src/API', '1.10.0', self::section('1.11.0')],
+        ];
+        $this->composer('src/B3', 'open-telemetry/b3');
+        $this->composer('src/SDK', 'open-telemetry/sdk', ['open-telemetry/api' => '^1.11']);
+        $this->composer('src/API', 'open-telemetry/api');
+
+        $this->run_release(str_repeat("\n", 9), ['--filter' => 'src/']);
+
+        $this->assertSame(['opentelemetry-php/api', 'opentelemetry-php/sdk', 'opentelemetry-php/b3'], array_keys($this->tags()));
+        $this->assertStringContainsString('Tag in this order: open-telemetry/api, open-telemetry/sdk, open-telemetry/b3', $this->output());
+    }
+
     public function test_release_notes_come_from_the_changelog(): void
     {
         $this->run_release("\n\n\n");
