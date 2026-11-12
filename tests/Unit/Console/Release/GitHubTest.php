@@ -235,6 +235,159 @@ class GitHubTest extends TestCase
         $this->assertStringContainsString('[HTTP] GET ' . self::API . '/releases/latest', $output->fetch());
     }
 
+    public function test_issue_titles_of_a_label_skip_pull_requests(): void
+    {
+        $this->respond(self::API . '/issues?state=all&labels=php-version-support&per_page=100', [
+            ['title' => 'Drop PHP 8.2'],
+            ['title' => 'A pull request', 'pull_request' => []],
+            ['title' => 'Add PHP 8.6'],
+        ]);
+
+        $this->assertSame(['Drop PHP 8.2', 'Add PHP 8.6'], $this->github->issueTitles('o/r', 'php-version-support'));
+    }
+
+    public function test_issue_titles_follow_the_pages(): void
+    {
+        $first = self::API . '/issues?state=all&labels=x&per_page=100';
+        $second = self::API . '/issues?state=all&labels=x&per_page=100&page=2';
+        $this->respond($first, [['title' => 'One']], 200, ['Link' => "<{$second}>; rel=\"next\""]);
+        $this->respond($second, [['title' => 'Two']]);
+
+        $this->assertSame(['One', 'Two'], $this->github->issueTitles('o/r', 'x'));
+        $this->assertCount(2, $this->requests);
+    }
+
+    public function test_issue_titles_encode_the_label(): void
+    {
+        $this->respond(self::API . '/issues?state=all&labels=a%26b&per_page=100', [['title' => 'Found']]);
+
+        $this->assertSame(['Found'], $this->github->issueTitles('o/r', 'a&b'));
+    }
+
+    public function test_issue_titles_fail_when_github_refuses(): void
+    {
+        $this->respond(self::API . '/issues?state=all&labels=x&per_page=100', ['message' => 'Bad credentials'], 401);
+
+        $this->expectException(GitHubException::class);
+        $this->expectExceptionMessage('401 Bad credentials');
+
+        $this->github->issueTitles('o/r', 'x');
+    }
+
+    public function test_create_issue_creates_its_labels_first(): void
+    {
+        $this->respond(self::API . '/labels', ['name' => 'php-version-support'], 201);
+        $this->respond(self::API . '/issues', ['html_url' => 'https://github.com/o/r/issues/7'], 201);
+        $this->github->authenticate('secret');
+
+        $url = $this->github->createIssue('o/r', 'Drop PHP 8.2', "Body\n- [ ] item", ['php-version-support']);
+
+        $this->assertSame('https://github.com/o/r/issues/7', $url);
+        $this->assertSame(['/repos/o/r/labels', '/repos/o/r/issues'], array_map(static fn (RequestInterface $r): string => $r->getUri()->getPath(), $this->requests));
+        $this->assertSame(['name' => 'php-version-support'], json_decode((string) $this->requests[0]->getBody(), true));
+        $this->assertSame(
+            ['title' => 'Drop PHP 8.2', 'body' => "Body\n- [ ] item", 'labels' => ['php-version-support']],
+            json_decode((string) $this->requests[1]->getBody(), true),
+        );
+        $this->assertSame('Bearer secret', $this->requests[1]->getHeaderLine('Authorization'));
+    }
+
+    public function test_create_issue_goes_on_when_the_label_exists(): void
+    {
+        $this->respond(self::API . '/labels', ['errors' => [['resource' => 'Label', 'code' => 'already_exists', 'field' => 'name']]], 422);
+        $this->respond(self::API . '/issues', ['html_url' => 'https://github.com/o/r/issues/8'], 201);
+
+        $this->assertSame('https://github.com/o/r/issues/8', $this->github->createIssue('o/r', 'Title', 'Body', ['x']));
+    }
+
+    public function test_create_issue_fails_for_a_label_github_rejects(): void
+    {
+        $this->respond(self::API . '/labels', ['message' => 'Validation Failed', 'errors' => [['resource' => 'Label', 'code' => 'invalid', 'field' => 'name']]], 422);
+
+        $this->expectException(GitHubException::class);
+        $this->expectExceptionMessage('422 Validation Failed');
+
+        $this->github->createIssue('o/r', 'Title', 'Body', ['x']);
+    }
+
+    public function test_create_issue_does_not_take_another_status_for_an_existing_label(): void
+    {
+        $this->respond(self::API . '/labels', ['message' => 'Forbidden', 'errors' => [['code' => 'already_exists']]], 403);
+
+        $this->expectException(GitHubException::class);
+        $this->expectExceptionMessage('403 Forbidden');
+
+        $this->github->createIssue('o/r', 'Title', 'Body', ['x']);
+    }
+
+    public function test_create_issue_fails_for_a_422_that_does_not_say_why(): void
+    {
+        $this->responses[self::API . '/labels'] = new Response(422, [], 'nope');
+
+        $this->expectException(GitHubException::class);
+
+        $this->github->createIssue('o/r', 'Title', 'Body', ['x']);
+    }
+
+    public function test_create_issue_creates_a_label_once_for_all_the_issues(): void
+    {
+        $this->respond(self::API . '/labels', ['name' => 'x'], 201);
+        $this->respond(self::API . '/issues', ['html_url' => 'https://github.com/o/r/issues/1'], 201);
+
+        $this->github->createIssue('o/r', 'One', 'Body', ['x']);
+        $this->github->createIssue('o/r', 'Two', 'Body', ['x']);
+
+        $paths = array_map(static fn (RequestInterface $r): string => $r->getUri()->getPath(), $this->requests);
+        $this->assertSame(['/repos/o/r/labels', '/repos/o/r/issues', '/repos/o/r/issues'], $paths);
+    }
+
+    public function test_create_issue_remembers_a_label_that_already_existed(): void
+    {
+        $this->respond(self::API . '/labels', ['errors' => [['code' => 'already_exists']]], 422);
+        $this->respond(self::API . '/issues', ['html_url' => 'https://github.com/o/r/issues/1'], 201);
+
+        $this->github->createIssue('o/r', 'One', 'Body', ['x']);
+        $this->github->createIssue('o/r', 'Two', 'Body', ['x']);
+
+        $this->assertCount(3, $this->requests);
+    }
+
+    public function test_create_issue_reports_the_issues_page_when_the_response_has_no_url(): void
+    {
+        $this->respond(self::API . '/issues', ['id' => 1], 201);
+
+        $this->assertSame('https://github.com/o/r/issues', $this->github->createIssue('o/r', 'Title', 'Body'));
+    }
+
+    public function test_a_link_to_another_host_is_not_followed(): void
+    {
+        $first = self::API . '/issues?state=all&labels=x&per_page=100';
+        $this->respond($first, [['title' => 'One']], 200, ['Link' => '<https://evil.example/repos/o/r/issues?page=2>; rel="next"']);
+        $this->github->authenticate('secret');
+
+        $this->assertSame(['One'], $this->github->issueTitles('o/r', 'x'));
+        $this->assertCount(1, $this->requests, 'the token went only to GitHub');
+    }
+
+    public function test_create_issue_without_labels_creates_none(): void
+    {
+        $this->respond(self::API . '/issues', ['html_url' => 'https://github.com/o/r/issues/9'], 201);
+
+        $this->github->createIssue('o/r', 'Title', 'Body');
+
+        $this->assertCount(1, $this->requests);
+    }
+
+    public function test_create_issue_fails_when_it_cannot_be_opened(): void
+    {
+        $this->respond(self::API . '/issues', ['message' => 'Issues are disabled for this repo'], 410);
+
+        $this->expectException(GitHubException::class);
+        $this->expectExceptionMessage('410 Issues are disabled for this repo');
+
+        $this->github->createIssue('o/r', 'Title', 'Body');
+    }
+
     /**
      * @param array<string, string> $headers
      */

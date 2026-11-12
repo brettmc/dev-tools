@@ -7,6 +7,8 @@ namespace OpenTelemetry\DevTools\Console\Application;
 use OpenTelemetry\DevTools\Console\Command\Changelog\ChangelogCheckCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\SpiCheckCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\ValidatePackagesCommand;
+use OpenTelemetry\DevTools\Console\Command\Php\PhpSupportCommand;
+use OpenTelemetry\DevTools\Console\Command\Php\PhpSupportIssuesCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\BranchAliasCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\PeclCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\PeclTagCommand;
@@ -38,6 +40,8 @@ class Application extends BaseApplication
             new ReleasePrepCommand(),
             new SpiCheckCommand(),
             new ChangelogCheckCommand(),
+            new PhpSupportCommand(),
+            new PhpSupportIssuesCommand(),
         ]);
     }
 }

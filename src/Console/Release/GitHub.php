@@ -24,6 +24,8 @@ class GitHub
 
     private ?ClientInterface $client;
     private ?string $token = null;
+    /** @var array<string, true> the labels known to exist, by `repository#label` */
+    private array $labels = [];
     private OutputInterface $output;
 
     /**
@@ -162,6 +164,68 @@ class GitHub
     }
 
     /**
+     * The titles of the issues of $repository, open and closed, that have $label.
+     *
+     * @return list<string>
+     */
+    public function issueTitles(string $repository, string $label): array
+    {
+        $url = self::API . "{$repository}/issues?state=all&labels=" . rawurlencode($label) . '&per_page=' . self::PER_PAGE;
+        $titles = [];
+        while ($url !== null) {
+            $response = $this->send('GET', $url);
+            foreach (self::list($this->decode('GET', $url, $response, 200), $url) as $issue) {
+                //the issues API lists the pull requests too
+                if (is_array($issue) && !isset($issue['pull_request']) && is_string($issue['title'] ?? null)) {
+                    $titles[] = $issue['title'];
+                }
+            }
+            $url = self::next($response);
+        }
+
+        return $titles;
+    }
+
+    /**
+     * Open an issue, after creating the labels that do not exist yet.
+     *
+     * @param list<string> $labels
+     * @return string the URL of the issue on github.com
+     */
+    public function createIssue(string $repository, string $title, string $body, array $labels = []): string
+    {
+        foreach ($labels as $label) {
+            $this->createLabel($repository, $label);
+        }
+        $url = self::API . "{$repository}/issues";
+        $issue = $this->expect('POST', $url, 201, ['title' => $title, 'body' => $body, 'labels' => $labels]);
+
+        //the issue exists by now, so a response without its URL is not worth reporting as a failure
+        return is_array($issue) && is_string($issue['html_url'] ?? null) ? $issue['html_url'] : "https://github.com/{$repository}/issues";
+    }
+
+    /**
+     * Create the label, unless it exists. A 422 is only fine when it says so: it is also what a
+     * label that GitHub rejects gets.
+     */
+    private function createLabel(string $repository, string $label): void
+    {
+        if (isset($this->labels["{$repository}#{$label}"])) {
+            return;
+        }
+        $url = self::API . "{$repository}/labels";
+        $response = $this->send('POST', $url, ['name' => $label]);
+        $errors = json_decode((string) $response->getBody(), true)['errors'] ?? [];
+        if ($response->getStatusCode() === 422 && is_array($errors) && in_array('already_exists', array_column(array_filter($errors, 'is_array'), 'code'), true)) {
+            $this->labels["{$repository}#{$label}"] = true;
+
+            return;
+        }
+        $this->decode('POST', $url, $response, 201);
+        $this->labels["{$repository}#{$label}"] = true;
+    }
+
+    /**
      * @param array<string, mixed>|null $body
      */
     private function expect(string $method, string $url, int $status, ?array $body = null): mixed
@@ -222,7 +286,8 @@ class GitHub
     private static function next(ResponseInterface $response): ?string
     {
         foreach (explode(',', $response->getHeaderLine('Link')) as $link) {
-            if (preg_match('/^\s*<([^>]+)>\s*;\s*rel="next"\s*$/', $link, $matches) === 1) {
+            //the token goes with every request, so a link to another host is not followed
+            if (preg_match('/^\s*<([^>]+)>\s*;\s*rel="next"\s*$/', $link, $matches) === 1 && str_starts_with($matches[1], self::API)) {
                 return $matches[1];
             }
         }

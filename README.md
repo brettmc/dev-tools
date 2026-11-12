@@ -44,6 +44,9 @@ PECL.
   - [Read the result as JSON](#read-the-result-as-json)
 - [Update branch aliases](#update-branch-aliases)
 - [Check SPI package dependencies](#check-spi-package-dependencies)
+- [Check PHP version support](#check-php-version-support)
+  - [Write the supported versions into the docs](#write-the-supported-versions-into-the-docs)
+  - [Open issues to drop or add a version](#open-issues-to-drop-or-add-a-version)
 - [Validate each package's composer.json](#validate-each-packages-composerjson)
 - [List the latest releases](#list-the-latest-releases)
 - [Release the PECL extension](#release-the-pecl-extension)
@@ -58,6 +61,8 @@ PECL.
 | `release:run` | Tags and releases the split repositories | Required |
 | `update:branch-alias` | Moves each package's `dev-main` alias to its latest release | Optional |
 | `packages:spi:check` | Checks `#[PackageDependency]` constraints against the monorepo | Not used |
+| `php:support` | Shows the PHP versions a project supports, and writes them to its docs | Not used |
+| `php:support:issues` | Opens issues to drop or add a PHP version, from Markdown templates | Required |
 | `packages:composer:validate` | Runs `composer validate` on each package | Not used |
 | `release:list` | Lists the latest release of each package | Optional |
 | `release:pecl` | Prints an updated `package.xml` for a PECL release of the extension | Not used |
@@ -592,6 +597,102 @@ and autoloader. It prints a row per attribute. It exits non-zero when:
 - an alias or `replace` entry does not satisfy a constraint
 - a provider registered in `extra.spi` does not load
 - the outdated check fails
+
+## Check PHP version support
+
+A project can support a PHP version until a number of months after its security support ends, 12 by
+default. `php:support` and `php:support:issues` apply that rule to a checkout. The dates come from
+[php.net](https://www.php.net/releases/states.php).
+
+The minimum PHP version is the lowest one the `php` requirement of `composer.json` allows. The tested
+versions are every `php-version` list in the `strategy.matrix` of a workflow. `include` entries are
+not counted, so a version that CI only tries as experimental is not yet supported. A version such as
+`8.2.1` counts as its branch, and a pre-release such as `8.5.0-dev` does not count. Quote the versions
+in the workflow: YAML reads an unquoted `8.10` as the number 8.1, so the commands refuse a version
+that is not quoted.
+
+A released PHP version from the minimum up is supported when CI tests it. Two things are to be done:
+
+- The minimum is to be dropped once its support ends within the notice period, even if CI no longer tests it.
+- A released version that CI does not test, and whose support has not ended, is to be added.
+
+Both commands take these options:
+
+| Option | Meaning |
+|---|---|
+| `--path` | Project checkout (default: working directory) |
+| `--workflow` | Workflow with the tested PHP versions, relative to `--path` (default: `.github/workflows/php.yml`) |
+| `--months` | Months a version is supported after its security support ends, 1 to 1200 (default: `12`) |
+| `--notice-days` | Days before the end of support to ask for dropping the minimum, 1 to 36500 (default: `60`) |
+| `--date` | The date to evaluate, as `YYYY-MM-DD` (default: today) |
+
+### Write the supported versions into the docs
+
+```shell
+cd opentelemetry-php
+vendor/bin/otel php:support
+vendor/bin/otel php:support --write --file=README.md --file=docs/versioning.md
+```
+
+It prints each version with its dates, whether CI tests it, and what is to be done. With `--write` it
+also writes text between markers in the `--file` files:
+
+```markdown
+<!-- php-support-badges:start -->
+<!-- php-support-badges:end -->
+```
+
+| Block | Text |
+|---|---|
+| `php-support-badges` | A badge per supported version |
+| `php-support-summary` | The lowest supported version, and the date it is supported until |
+| `php-support-table` | A table of the supported versions and their dates |
+
+A file needs at least one block, and each block needs its start and end marker once, in that order, so
+do not show the marker syntax in a file that has the blocks. Line endings are kept. Every file is updated before any is written, so a file that cannot be read or has
+bad markers leaves the others alone.
+
+| Option | Meaning |
+|---|---|
+| `--file` | File with markers, relative to `--path`. Repeatable (default: `README.md`) |
+| `--write` | Write the text between the markers |
+| `--check` | Write nothing, and exit non-zero when the text is out of date |
+| `--policy-link` | Where the badges and the summary link to, relative to `--path` (default: `docs/versioning.md#php-version-support`). The link is made relative to each file. |
+
+### Open issues to drop or add a version
+
+```shell
+export GITHUB_TOKEN=<token with issues: write>
+vendor/bin/otel php:support:issues --repo=open-telemetry/opentelemetry-php --dry-run
+```
+
+For each version to drop or add, it opens an issue written as a Markdown template: `drop.md` or
+`add.md` in `--templates`. Every template is read before any issue is opened. A template has front
+matter with a `title` and its `labels`, then the body:
+
+```markdown
+---
+title: "Drop support for PHP {{ version }} (support ends {{ supported_until }})"
+labels: [php-version-support]
+---
+PHP {{ version }} stopped receiving security fixes on {{ security_support_end }}.
+
+- [ ] Raise `require.php` in `composer.json`
+```
+
+The placeholders are `{{ version }}`, `{{ released }}`, `{{ security_support_end }}` and
+`{{ supported_until }}`. Any other name is an error. The labels are created when they do not exist, and a
+label that GitHub rejects is an error. A label cannot contain a comma.
+
+The first label is used to find the issues that exist, which are listed once per run. An issue with the
+same title, open or closed, is not opened again, so it is safe to run on a schedule.
+
+| Option | Meaning |
+|---|---|
+| `--repo` | Repository to open the issues in, as `owner/name` (default: `GITHUB_REPOSITORY`) |
+| `--token` | GitHub token (default: `GITHUB_TOKEN`). Needed unless `--dry-run` |
+| `--templates` | Directory with `drop.md` and `add.md`, relative to `--path` (default: `.github/php-version-support`) |
+| `--dry-run` | Print the issues without contacting GitHub |
 
 ## Validate each package's composer.json
 
