@@ -144,6 +144,21 @@ class BranchAliasCommandTest extends TestCase
         );
     }
 
+    public function test_keeps_an_alias_that_covers_the_latest_release(): void
+    {
+        $root = $this->setUpRealMonorepo('packages/api');
+        $package = "{$root}/packages/api/composer.json";
+        $config = '{"name":"open-telemetry/api","extra":{"branch-alias":{"dev-main":"1.x-dev"}}}';
+        file_put_contents($package, $config);
+
+        $this->assertSame(Command::SUCCESS, $this->executeWithRelease($root, '1.11.1'));
+        $display = $this->commandTester->getDisplay();
+        $this->assertStringContainsString('up to date', $display);
+        //the "new alias" column states what the file says
+        $this->assertStringNotContainsString('1.11.x-dev', $display);
+        $this->assertSame($config, file_get_contents($package));
+    }
+
     public function test_refuses_a_split_prefix_that_escapes_the_monorepo(): void
     {
         $root = $this->setUpRealMonorepo('../outside');

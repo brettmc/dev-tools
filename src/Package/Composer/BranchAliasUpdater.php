@@ -46,9 +46,10 @@ class BranchAliasUpdater
      * of the file (formatting, key order, comments composer itself would drop) survives untouched.
      *
      * An alias ahead of $alias is left alone unless $allowLower is set, for a version that has been
-     * chosen rather than calculated from the latest release.
+     * chosen rather than calculated from the latest release. An alias that already covers $version,
+     * such as `1.x-dev` for 1.11.1, is left alone too.
      */
-    public function update(string $composerFilePath, string $branchKey, string $alias, bool $dryRun = false, bool $allowLower = false): BranchAliasUpdate
+    public function update(string $composerFilePath, string $branchKey, string $alias, bool $dryRun = false, bool $allowLower = false, ?string $version = null): BranchAliasUpdate
     {
         if (!file_exists($composerFilePath)) {
             return new BranchAliasUpdate(BranchAliasStatus::NotFound);
@@ -61,7 +62,7 @@ class BranchAliasUpdater
             //not aliased: inserting one would mean re-encoding the file, so leave it for a human
             return new BranchAliasUpdate(BranchAliasStatus::Missing);
         }
-        if ($current === $alias) {
+        if ($current === $alias || ($version !== null && self::covers($current, $version))) {
             return new BranchAliasUpdate(BranchAliasStatus::Unchanged, $current);
         }
         $ahead = $this->isAhead($current, $alias);

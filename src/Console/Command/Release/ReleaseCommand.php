@@ -14,6 +14,7 @@ use OpenTelemetry\DevTools\Console\Release\ReleaseNotes;
 use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogException;
 use OpenTelemetry\DevTools\Package\Changelog\ChangelogReleases;
+use OpenTelemetry\DevTools\Package\Composer\BranchAliasUpdater;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
 use OpenTelemetry\DevTools\Package\Release\PackageRelease;
@@ -35,7 +36,7 @@ class ReleaseCommand extends AbstractReleaseCommand
 {
     private const CHANGELOG_FILE = 'CHANGELOG.md';
     /**
-     * @var array<string> packages released by this run
+     * @var list<array{0: Repository, 1: string}> packages released by this run, with their version
      */
     private array $released = [];
     /** @var list<array{repository: string, version: string, target: string, latest: bool, draft: bool, url: ?string}> */
@@ -746,7 +747,7 @@ class ReleaseCommand extends AbstractReleaseCommand
 
             return false;
         }
-        $this->released[] = $repository->downstream->project;
+        $this->released[] = [$repository, $release->version];
         $this->releases[] = $made;
         $this->output->writeln("<info>[CREATED] {$repository->downstream} {$release->version}: </info> {$made['url']}");
 
@@ -754,16 +755,25 @@ class ReleaseCommand extends AbstractReleaseCommand
     }
 
     /**
-     * A release makes the branch alias of that package stale: composer ignores `extra.branch-alias`
-     * in a tag, so the alias is updated after tagging rather than before it.
+     * Name each released package whose branch alias in the checkout does not cover the version
+     * tagged. After a prepared release there are none, as release:prep moved them. A version typed
+     * at the prompt may differ from the prepared one.
      */
     private function remind_about_branch_aliases(): void
     {
-        if ($this->released === []) {
+        $branchKey = "dev-{$this->source_branch}";
+        $stale = [];
+        foreach ($this->released as [$repository, $version]) {
+            [, $composer] = $this->split_composer($this->checkoutPath, $repository);
+            $alias = $composer['extra']['branch-alias'][$branchKey] ?? null;
+            if (is_string($alias) && !BranchAliasUpdater::covers($alias, $version)) {
+                $stale[] = "{$repository->downstream->project} {$version} ({$branchKey}: {$alias})";
+            }
+        }
+        if ($stale === []) {
             return;
         }
-        $packages = implode(', ', $this->released);
-        $this->output->writeln("<comment>Branch aliases may now be out of date for: {$packages}</comment>");
+        $this->output->writeln('<comment>Branch aliases do not cover the versions tagged: ' . implode(', ', $stale) . '</comment>');
         $this->output->writeln('<comment>Run `vendor/bin/otel update:branch-alias` from the monorepo checkout, and open a pull request with the changes.</comment>');
     }
 }

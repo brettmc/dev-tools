@@ -124,7 +124,7 @@ export GITHUB_TOKEN=<fine-grained-token>
 3. Review the changes with `git diff`, open a pull request, and merge it.
 4. Pull, then run [release:run](#tag-a-release) on that checkout. It tags each changed package as the
    version in its changelog, in the order their dependencies need.
-5. If `release:run` says branch aliases are out of date, run
+5. If `release:run` says branch aliases do not cover the versions tagged, run
    [update:branch-alias](#update-branch-aliases) and open a pull request. After a prepared release
    there is usually nothing to update.
 
@@ -411,9 +411,10 @@ latest release. The release notes are the body of that section, followed by a co
 with changes must have a `CHANGELOG.md` with a section for the version released. Otherwise the run
 stops, or warns with `--dry-run`.
 
-Packages are tagged in the order `release:prep` prints, and the order is printed. When a release
-makes a branch alias stale, the run ends with a reminder to run
-[update:branch-alias](#update-branch-aliases).
+Packages are tagged in the order `release:prep` prints, and the order is printed. When the
+checkout's branch alias of a released package does not cover the version tagged, the run ends with a
+reminder to run [update:branch-alias](#update-branch-aliases). After a prepared release there is no
+reminder, as `release:prep` moved the aliases.
 
 ### Prepare the checkout
 
@@ -559,6 +560,9 @@ leaving the rest of the file untouched.
 
 These are reported but never changed:
 
+- a package whose alias already covers the latest release, such as `1.x-dev` for `1.11.1`.
+  gen-otlp-protobuf and sem-conv are versioned from upstream releases, so a minor-line alias
+  would go stale on every regeneration.
 - a package with no `branch-alias`, as most contrib packages are
 - a package whose alias is ahead of its releases, such as `1.0.x-dev` with a latest release of
   `0.0.5`. That alias is aspirational rather than stale, and lowering it would break constraints that
