@@ -69,6 +69,15 @@ MD;
         $this->assertSame(['1.0.0'], (new ChangelogReleases($changelog))->versions());
     }
 
+    public function test_heading_is_the_dated_line_of_the_version(): void
+    {
+        $releases = new ChangelogReleases(self::CHANGELOG);
+
+        $this->assertSame('## 1.44.0 - 2026-10-01', $releases->heading('1.44.0'));
+        $this->assertSame('## 1.44.0 - 2026-10-01', $releases->heading('v1.44.0'));
+        $this->assertNull($releases->heading('1.46.0'));
+    }
+
     public function test_notes_are_the_body_of_the_dated_section(): void
     {
         $this->assertSame(

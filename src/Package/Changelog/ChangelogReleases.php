@@ -56,6 +56,21 @@ final class ChangelogReleases
     }
 
     /**
+     * The heading line of the section dated for $version, or null when there is none.
+     */
+    public function heading(string $version): ?string
+    {
+        $version = ltrim($version, 'v');
+        foreach ($this->lines as [$line, $fenced]) {
+            if (!$fenced && preg_match(self::HEADING, $line, $m) === 1 && $m[1] === $version) {
+                return rtrim($line);
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * The body of the section dated for $version, followed by the link definitions it uses. Those
      * live at the foot of the file, so they would otherwise be lost and `[#12]` left unresolved.
      * Null when there is no such section, or it has no body.

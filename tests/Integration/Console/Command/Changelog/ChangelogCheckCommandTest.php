@@ -17,7 +17,7 @@ class ChangelogCheckCommandTest extends TestCase
 {
     private const CHANGELOG = "# Changelog\n\n## Unreleased\n\n### Added\n\n- A new thing.\n";
     private const DEFINITION_12 = "[#12]: https://github.com/open-telemetry/opentelemetry-php/pull/12\n";
-    private const RELEASED ="# Changelog\n\n## Unreleased\n\n### Added\n\n- A new thing.\n\n## 1.0.0 - 2026-01-31\n\n### Fixed\n\n- An old fix.\n";
+    private const RELEASED = "# Changelog\n\n## Unreleased\n\n### Added\n\n- A new thing.\n\n## 1.0.0 - 2026-01-31\n\n### Fixed\n\n- An old fix.\n";
 
     private string $dir;
     private string|false $githubActions;
@@ -215,6 +215,17 @@ class ChangelogCheckCommandTest extends TestCase
         $this->assertStringContainsString('src/API/CHANGELOG.md: released section 1.0.0 changed', $this->display());
     }
 
+    public function test_changed_released_heading_fails(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::RELEASED);
+        $this->commit('Release API');
+        $this->write('src/API/CHANGELOG.md', str_replace('## 1.0.0 - 2026-01-31', '## 1.0.0 - 2026-02-01', self::RELEASED));
+        $this->commit('Redate API');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertStringContainsString('src/API/CHANGELOG.md: released section 1.0.0 changed', $this->display());
+    }
+
     public function test_removed_released_section_fails(): void
     {
         $this->write('src/API/CHANGELOG.md', self::RELEASED);
@@ -296,6 +307,15 @@ class ChangelogCheckCommandTest extends TestCase
 
         $this->assertSame(Command::FAILURE, $this->checkPr('12', 'HEAD^1', 'HEAD'));
         $this->assertStringContainsString('entry doesn\'t link to #12: A newer thing.', $this->display());
+    }
+
+    public function test_new_copy_of_an_existing_entry_must_link_the_pull_request(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "\n### Fixed\n\n- A new thing.\n");
+        $this->commit('Note API');
+
+        $this->assertSame(Command::FAILURE, $this->checkPr('12', 'HEAD^1', 'HEAD'));
+        $this->assertSame(1, substr_count($this->display(), "entry doesn't link to #12: A new thing."));
     }
 
     public function test_entries_already_unreleased_need_no_link(): void

@@ -261,7 +261,8 @@ class ChangelogCheckCommand extends BaseCommand
         foreach ($before->versions() as $version) {
             if (!in_array($version, $after->versions(), true)) {
                 $problems[] = "released section {$version} removed";
-            } elseif ($before->notes($version) !== $after->notes($version)) {
+            } elseif ($before->heading($version) !== $after->heading($version)
+                || $before->notes($version) !== $after->notes($version)) {
                 $problems[] = "released section {$version} changed";
             }
         }
@@ -271,20 +272,26 @@ class ChangelogCheckCommand extends BaseCommand
 
     /**
      * The Unreleased entries of $target that are not in $base and don't link to $url. A reworded
-     * entry is new. Every entry of a base that is missing or doesn't parse is new.
+     * entry is new, as is a second copy of an existing one. Every entry of a base that is missing or
+     * doesn't parse is new.
      *
      * @return list<string>
      */
     private function unlinkedEntries(?string $base, string $target, string $url): array
     {
         $before = array_merge(...array_values($this->unreleased($base) ?? []));
-        $after = array_merge(...array_values($this->unreleased($target) ?? []));
         $links = new ChangelogLinks($target);
+        $unlinked = [];
+        foreach (array_merge(...array_values($this->unreleased($target) ?? [])) as $entry) {
+            $existing = array_search($entry, $before, true);
+            if ($existing !== false) {
+                unset($before[$existing]);
+            } elseif (!$links->linksTo($entry, $url)) {
+                $unlinked[] = $entry;
+            }
+        }
 
-        return array_values(array_filter(
-            $after,
-            static fn (string $entry): bool => !in_array($entry, $before, true) && !$links->linksTo($entry, $url)
-        ));
+        return $unlinked;
     }
 
     /**
