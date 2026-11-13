@@ -159,7 +159,7 @@ class BranchAliasCommand extends AbstractReleaseCommand
 
             return [$package, $version, '', '', 'skipped, outside monorepo'];
         }
-        $update = $this->updater->update($composerFile, $branchKey, $alias, $this->dry_run);
+        $update = $this->updater->update($composerFile, $branchKey, $alias, $this->dry_run, version: $version);
         if ($update->status === BranchAliasStatus::WriteFailed) {
             $this->output->writeln(sprintf('<error>[%s] could not write %s</error>', $package, $composerFile));
             $this->failures++;
@@ -176,11 +176,14 @@ class BranchAliasCommand extends AbstractReleaseCommand
             BranchAliasStatus::WriteFailed,
         ], true);
 
+        //an unchanged alias may be one that covers the release, such as 1.x-dev, rather than $alias
+        $newAlias = $update->status === BranchAliasStatus::Unchanged ? (string) $update->current : $alias;
+
         return [
             $package,
             $version,
             $update->current ?? '',
-            $aliased ? $alias : '',
+            $aliased ? $newAlias : '',
             $action,
         ];
     }

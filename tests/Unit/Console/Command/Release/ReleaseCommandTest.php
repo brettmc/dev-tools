@@ -883,6 +883,35 @@ class ReleaseCommandTest extends TestCase
         $this->assertNull($this->post());
     }
 
+    public function test_no_alias_reminder_when_the_alias_covers_the_release(): void
+    {
+        $this->alias('src/SemConv', '1.x-dev');
+
+        $this->run_release('', [], false);
+
+        $this->assertSame(['opentelemetry-php/sem-conv' => '1.45.0'], $this->tags());
+        $this->assertStringNotContainsString('update:branch-alias', $this->output());
+    }
+
+    public function test_alias_reminder_names_an_alias_that_does_not_cover_the_release(): void
+    {
+        $this->alias('src/SemConv', '1.44.x-dev');
+
+        $this->run_release('', [], false);
+
+        $this->assertSame(['opentelemetry-php/sem-conv' => '1.45.0'], $this->tags());
+        $this->assertStringContainsString('sem-conv 1.45.0 (dev-main: 1.44.x-dev)', $this->output());
+        $this->assertStringContainsString('update:branch-alias', $this->output());
+    }
+
+    public function test_no_alias_reminder_for_a_package_without_an_alias(): void
+    {
+        $this->run_release('', [], false);
+
+        $this->assertSame(['opentelemetry-php/sem-conv' => '1.45.0'], $this->tags());
+        $this->assertStringNotContainsString('update:branch-alias', $this->output());
+    }
+
     public function test_dry_run_creates_nothing(): void
     {
         $this->run_release("\n\n\n", ['--dry-run' => true]);
@@ -1275,6 +1304,13 @@ class ReleaseCommandTest extends TestCase
         $dir = $this->root->url() . "/{$prefix}";
         is_dir($dir) || mkdir($dir, 0o777, true);
         file_put_contents("{$dir}/composer.json", json_encode(['name' => $name, 'require' => (object) $require]));
+    }
+
+    private function alias(string $prefix, string $alias): void
+    {
+        $dir = $this->root->url() . "/{$prefix}";
+        is_dir($dir) || mkdir($dir, 0o777, true);
+        file_put_contents("{$dir}/composer.json", json_encode(['name' => 'open-telemetry/sem-conv', 'extra' => ['branch-alias' => ['dev-main' => $alias]]]));
     }
 
     /**

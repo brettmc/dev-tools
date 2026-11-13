@@ -105,6 +105,32 @@ class BranchAliasUpdaterTest extends TestCase
     }
 
     /**
+     * sem-conv follows the upstream semconv version, so a minor-line alias would go stale on every
+     * regeneration. `1.x-dev` covers 1.45.0, and is kept.
+     */
+    public function test_update_is_unchanged_when_alias_covers_the_version(): void
+    {
+        $config = str_replace('1.8.x-dev', '1.x-dev', self::CONFIG);
+        $path = $this->createConfigFile($config);
+
+        $update = $this->updater->update($path, self::BRANCH_KEY, '1.45.x-dev', version: '1.45.0');
+
+        $this->assertSame(BranchAliasStatus::Unchanged, $update->status);
+        $this->assertSame('1.x-dev', $update->current);
+        $this->assertSame($config, file_get_contents($path));
+    }
+
+    public function test_update_replaces_alias_that_does_not_cover_the_version(): void
+    {
+        $path = $this->createConfigFile(str_replace('1.8.x-dev', '1.10.x-dev', self::CONFIG));
+
+        $update = $this->updater->update($path, self::BRANCH_KEY, '1.11.x-dev', version: '1.11.0');
+
+        $this->assertSame(BranchAliasStatus::Updated, $update->status);
+        $this->assertStringContainsString('"dev-main": "1.11.x-dev"', (string) file_get_contents($path));
+    }
+
+    /**
      * An alias higher than any release (eg `1.0.x-dev` for a package still releasing 0.x) is
      * aspirational, and must not be lowered.
      */
