@@ -16,6 +16,8 @@ use Symfony\Component\Process\Process;
 class ChangelogCheckCommandTest extends TestCase
 {
     private const CHANGELOG = "# Changelog\n\n## Unreleased\n\n### Added\n\n- A new thing.\n";
+    private const DEFINITION_12 = "[#12]: https://github.com/open-telemetry/opentelemetry-php/pull/12\n";
+    private const RELEASED ="# Changelog\n\n## Unreleased\n\n### Added\n\n- A new thing.\n\n## 1.0.0 - 2026-01-31\n\n### Fixed\n\n- An old fix.\n";
 
     private string $dir;
     private string|false $githubActions;
@@ -31,6 +33,7 @@ class ChangelogCheckCommandTest extends TestCase
         $this->tester = new CommandTester(new ChangelogCheckCommand());
 
         $this->write('.gitsplit.yml', <<<'YAML'
+            project_url: "https://github.com/open-telemetry/opentelemetry-php.git"
             splits:
               - prefix: "src/API"
                 target: "https://${GH_TOKEN}@github.com/opentelemetry-php/api.git"
@@ -79,6 +82,274 @@ class ChangelogCheckCommandTest extends TestCase
         $this->assertStringNotContainsString('Add an entry', $this->display());
     }
 
+    public function test_entry_under_a_released_section_fails(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::RELEASED);
+        $this->commit('Release API');
+        $this->write('src/API/a.php', '<?php // changed');
+        $this->write('src/API/CHANGELOG.md', self::RELEASED . "- Landed in the wrong section.\n");
+        $this->commit('Change API');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, Unreleased not updated$/m', $this->display());
+        $this->assertStringContainsString('Add an entry under Unreleased', $this->display());
+
+        putenv('GITHUB_ACTIONS=true');
+        $this->check('HEAD^1', 'HEAD');
+        $this->assertStringContainsString(
+            "\n::error file=src/API/CHANGELOG.md::src/API changed without an entry under Unreleased in its CHANGELOG.md\n",
+            $this->display()
+        );
+    }
+
+    public function test_rewrapped_entry_is_not_an_unreleased_change(): void
+    {
+        $this->write('src/API/a.php', '<?php // changed');
+        $this->write('src/API/CHANGELOG.md', "# Changelog\n\n## Unreleased\n\n### Added\n\n- A new\n  thing.\n");
+        $this->commit('Change API');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, Unreleased not updated$/m', $this->display());
+    }
+
+    public function test_removed_entry_is_an_unreleased_change(): void
+    {
+        $this->write('src/API/a.php', '<?php // reverted');
+        $this->write('src/API/CHANGELOG.md', "# Changelog\n\n## Unreleased\n");
+        $this->commit('Revert API');
+
+        $this->assertSame(Command::SUCCESS, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, CHANGELOG.md updated$/m', $this->display());
+    }
+
+    public function test_base_changelog_that_does_not_parse_has_no_unreleased_entries(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "* Not a dash.\n");
+        $this->commit('Break API');
+        $this->write('src/API/a.php', '<?php // changed');
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "- A dash.\n");
+        $this->commit('Change API');
+
+        $this->assertSame(Command::SUCCESS, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, CHANGELOG.md updated$/m', $this->display());
+    }
+
+    public function test_emptying_unreleased_of_a_base_that_does_not_parse_is_not_an_entry(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "* Not a dash.\n");
+        $this->commit('Break API');
+        $this->write('src/API/a.php', '<?php // changed');
+        $this->write('src/API/CHANGELOG.md', "# Changelog\n\n## Unreleased\n");
+        $this->commit('Change API');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, Unreleased not updated$/m', $this->display());
+    }
+
+    public function test_one_revision_compares_unreleased_with_the_working_tree(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::RELEASED);
+        $this->commit('Release API');
+        $this->write('src/API/a.php', '<?php // changed');
+        $this->write('src/API/CHANGELOG.md', self::RELEASED . "- Landed in the wrong section.\n");
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, Unreleased not updated$/m', $this->display());
+    }
+
+    public function test_without_a_range_unreleased_is_compared_with_the_merge_base(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::RELEASED);
+        $this->commit('Release API');
+        $this->git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+        $this->write('src/API/a.php', '<?php // changed');
+        $this->write('src/API/CHANGELOG.md', self::RELEASED . "- Landed in the wrong section.\n");
+
+        $this->assertSame(Command::FAILURE, $this->check());
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, Unreleased not updated$/m', $this->display());
+    }
+
+    public function test_three_dot_range_compares_unreleased_with_the_merge_base(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::RELEASED);
+        $this->commit('Release API');
+        $this->git('branch', '-M', 'main');
+        $this->git('branch', 'feature');
+        $this->write('src/API/CHANGELOG.md', str_replace('- A new thing.', "- A new thing.\n- Merged to main meanwhile.", self::RELEASED));
+        $this->commit('Note API on main');
+        $this->git('checkout', '--quiet', 'feature');
+        $this->write('src/API/a.php', '<?php // changed');
+        $this->write('src/API/CHANGELOG.md', self::RELEASED . "- Landed in the wrong section.\n");
+        $this->commit('Change API');
+
+        $this->assertSame(Command::FAILURE, $this->check('main...feature'));
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, Unreleased not updated$/m', $this->display());
+    }
+
+    public function test_changed_released_section_fails_naming_it(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::RELEASED);
+        $this->commit('Release API');
+        $this->write('src/API/CHANGELOG.md', str_replace('An old fix.', 'An old fix, reworded.', self::RELEASED));
+        $this->commit('Reword API');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertStringContainsString('src/API/CHANGELOG.md: released section 1.0.0 changed', $this->display());
+        $this->assertStringContainsString('skip-changelog', $this->display());
+
+        putenv('GITHUB_ACTIONS=true');
+        $this->check('HEAD^1', 'HEAD');
+        $this->assertStringContainsString("\n::error file=src/API/CHANGELOG.md::released section 1.0.0 changed\n", $this->display());
+    }
+
+    public function test_entry_under_a_released_section_names_the_section(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::RELEASED);
+        $this->commit('Release API');
+        $this->write('src/API/a.php', '<?php // changed');
+        $this->write('src/API/CHANGELOG.md', self::RELEASED . "- Landed in the wrong section.\n");
+        $this->commit('Change API');
+
+        $this->check('HEAD^1', 'HEAD');
+
+        $this->assertStringContainsString('src/API/CHANGELOG.md: released section 1.0.0 changed', $this->display());
+    }
+
+    public function test_removed_released_section_fails(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::RELEASED);
+        $this->commit('Release API');
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG);
+        $this->commit('Drop API history');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertStringContainsString('src/API/CHANGELOG.md: released section 1.0.0 removed', $this->display());
+    }
+
+    public function test_new_released_section_passes(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::RELEASED);
+        $this->commit('Release API');
+        $this->write('src/API/a.php', '<?php // alias moved');
+        $this->write('src/API/CHANGELOG.md', str_replace("## Unreleased\n", "## Unreleased\n\n## 1.1.0 - 2026-02-28\n", self::RELEASED));
+        $this->commit('Prepare release');
+
+        $this->assertSame(Command::SUCCESS, $this->check('HEAD^1', 'HEAD'));
+        $this->assertStringNotContainsString('released section', $this->display());
+    }
+
+    public function test_new_link_definition_does_not_change_released_sections(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::RELEASED);
+        $this->commit('Release API');
+        $this->write('src/API/CHANGELOG.md', str_replace('- A new thing.', '- A new thing ([#7]).', self::RELEASED) . "\n[#7]: https://x/7\n");
+        $this->commit('Link API');
+
+        $this->assertSame(Command::SUCCESS, $this->check('HEAD^1', 'HEAD'));
+    }
+
+    public function test_new_entry_linking_the_pull_request_passes(): void
+    {
+        $this->write('src/API/a.php', '<?php // changed');
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "- Another ([#12]).\n\n" . self::DEFINITION_12);
+        $this->commit('Change API');
+
+        $this->assertSame(Command::SUCCESS, $this->checkPr('12', 'HEAD^1', 'HEAD'));
+    }
+
+    public function test_new_entry_linking_the_pull_request_inline_passes(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "- Another ([#12](https://github.com/open-telemetry/opentelemetry-php/pull/12)).\n");
+        $this->commit('Note API');
+
+        $this->assertSame(Command::SUCCESS, $this->checkPr('12', 'HEAD^1', 'HEAD'));
+    }
+
+    public function test_new_entry_without_the_pull_request_link_fails_with_the_text_to_add(): void
+    {
+        $this->write('src/API/a.php', '<?php // changed');
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "- Another.\n");
+        $this->commit('Change API');
+
+        $this->assertSame(Command::FAILURE, $this->checkPr('12', 'HEAD^1', 'HEAD'));
+        $this->assertStringContainsString('src/API/CHANGELOG.md: entry doesn\'t link to #12: Another.', $this->display());
+        $this->assertStringContainsString("End each new entry with ([#12]), and add this line at the end of the file:\n" . self::DEFINITION_12, $this->display());
+
+        putenv('GITHUB_ACTIONS=true');
+        $this->checkPr('12', 'HEAD^1', 'HEAD');
+        $this->assertStringContainsString("\n::error file=src/API/CHANGELOG.md::entry doesn't link to #12: Another.\n", $this->display());
+    }
+
+    public function test_new_entry_linking_another_pull_request_fails(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "- Another ([#12]).\n\n" . self::DEFINITION_12);
+        $this->commit('Note API');
+
+        $this->assertSame(Command::FAILURE, $this->checkPr('13', 'HEAD^1', 'HEAD'));
+        $this->assertStringContainsString('entry doesn\'t link to #13: Another ([#12]).', $this->display());
+    }
+
+    public function test_reworded_entry_must_link_the_pull_request(): void
+    {
+        $this->write('src/API/CHANGELOG.md', str_replace('A new thing.', 'A newer thing.', self::CHANGELOG));
+        $this->commit('Reword API');
+
+        $this->assertSame(Command::FAILURE, $this->checkPr('12', 'HEAD^1', 'HEAD'));
+        $this->assertStringContainsString('entry doesn\'t link to #12: A newer thing.', $this->display());
+    }
+
+    public function test_entries_already_unreleased_need_no_link(): void
+    {
+        $this->write('src/API/CHANGELOG.md', str_replace('- A new thing.', "- A first ([#12]).\n- A new thing.", self::CHANGELOG) . "\n" . self::DEFINITION_12);
+        $this->commit('Note API');
+
+        $this->assertSame(Command::SUCCESS, $this->checkPr('12', 'HEAD^1', 'HEAD'));
+    }
+
+    public function test_release_that_empties_unreleased_passes_with_a_pull_request(): void
+    {
+        $this->write('src/API/a.php', '<?php // alias moved');
+        $this->write('src/API/CHANGELOG.md', str_replace("## Unreleased\n", "## Unreleased\n\n## 1.1.0 - 2026-02-28\n", self::CHANGELOG));
+        $this->commit('Prepare release');
+
+        $this->assertSame(Command::SUCCESS, $this->checkPr('12', 'HEAD^1', 'HEAD'));
+    }
+
+    public function test_every_entry_of_a_base_that_does_not_parse_must_link(): void
+    {
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "* Not a dash.\n");
+        $this->commit('Break API');
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "- A dash ([#12]).\n\n" . self::DEFINITION_12);
+        $this->commit('Fix API');
+
+        $this->assertSame(Command::FAILURE, $this->checkPr('12', 'HEAD^1', 'HEAD'));
+        $this->assertStringContainsString('entry doesn\'t link to #12: A new thing.', $this->display());
+        $this->assertStringNotContainsString('A dash', $this->display());
+    }
+
+    public function test_without_a_range_only_changed_changelogs_need_the_link(): void
+    {
+        $this->git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+        $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "- Another ([#12]).\n\n" . self::DEFINITION_12);
+
+        $this->assertSame(Command::SUCCESS, $this->checkPr('12'));
+        $this->assertStringNotContainsString('src/SDK', $this->display());
+    }
+
+    public function test_pull_request_must_be_a_number(): void
+    {
+        $this->assertSame(Command::FAILURE, $this->checkPr('abc', 'HEAD'));
+        $this->assertStringContainsString('--pr must be a pull request number, not "abc"', $this->display());
+    }
+
+    public function test_pull_request_needs_a_project_url(): void
+    {
+        $this->write('.gitsplit.yml', (string) preg_replace('/^project_url:.*\n/', '', (string) file_get_contents("{$this->dir}/.gitsplit.yml")));
+
+        $this->assertSame(Command::FAILURE, $this->checkPr('12', 'HEAD'));
+        $this->assertStringContainsString('--pr needs project_url in .gitsplit.yml, to know the repository', $this->display());
+    }
+
     public function test_changelog_changed_alone_passes(): void
     {
         $this->write('src/API/CHANGELOG.md', self::CHANGELOG . "- Another.\n");
@@ -97,12 +368,26 @@ class ChangelogCheckCommandTest extends TestCase
         $this->assertMatchesRegularExpression('/^  src\/API +Markdown only, no entry needed$/m', $this->display());
     }
 
-    public function test_split_without_a_changelog_is_reported_and_passes(): void
+    public function test_split_without_a_changelog_fails(): void
     {
         $this->write('src/Context/a.php', '<?php // changed');
         $this->commit('Change Context');
 
-        $this->assertSame(Command::SUCCESS, $this->check('HEAD^1', 'HEAD'));
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/Context +changed, has no CHANGELOG.md$/m', $this->display());
+        $this->assertStringContainsString('Add a CHANGELOG.md to each package without one', $this->display());
+
+        putenv('GITHUB_ACTIONS=true');
+        $this->check('HEAD^1', 'HEAD');
+        $this->assertStringContainsString("\n::error file=src/Context/CHANGELOG.md::src/Context has no CHANGELOG.md\n", $this->display());
+    }
+
+    public function test_markdown_only_change_to_a_split_without_a_changelog_fails(): void
+    {
+        $this->write('src/Context/README.md', '# Context');
+        $this->commit('Document Context');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
         $this->assertMatchesRegularExpression('/^  src\/Context +changed, has no CHANGELOG.md$/m', $this->display());
     }
 
@@ -294,6 +579,11 @@ class ChangelogCheckCommandTest extends TestCase
     private function check(string ...$revisions): int
     {
         return $this->tester->execute(['revisions' => $revisions, '--path' => $this->dir]);
+    }
+
+    private function checkPr(string $pr, string ...$revisions): int
+    {
+        return $this->tester->execute(['revisions' => $revisions, '--path' => $this->dir, '--pr' => $pr]);
     }
 
     private function display(): string

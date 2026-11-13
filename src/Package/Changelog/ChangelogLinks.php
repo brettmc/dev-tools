@@ -13,6 +13,7 @@ final class ChangelogLinks
     private const DEFINITION = '/^\[([^\]]+)\]:\s*(\S+)/';
     /** a shortcut reference: not part of `[text][label]` or `[text](url)` */
     private const REFERENCE = '/(?<!\])\[([^\[\]]+)\](?![\[(])/';
+    private const INLINE = '/\[[^\[\]]*\]\(([^()\s]+)\)/';
 
     /** @var array<string, string> URL by lowercased label */
     private array $urls = [];
@@ -59,6 +60,26 @@ final class ChangelogLinks
         });
 
         return array_values(array_unique($labels));
+    }
+
+    /**
+     * Whether $text, outside code, links to $url: by a reference defined as $url, or inline.
+     */
+    public function linksTo(string $text, string $url): bool
+    {
+        $found = false;
+        MarkdownText::outsideCode($text, function (string $run) use ($url, &$found): string {
+            preg_match_all(self::REFERENCE, $run, $references);
+            preg_match_all(self::INLINE, $run, $inline);
+            foreach ($references[1] as $label) {
+                $found = $found || ($this->urls[strtolower($label)] ?? null) === $url;
+            }
+            $found = $found || in_array($url, $inline[1], true);
+
+            return $run;
+        });
+
+        return $found;
     }
 
     /**

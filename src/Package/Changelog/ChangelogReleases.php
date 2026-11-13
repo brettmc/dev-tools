@@ -35,13 +35,24 @@ final class ChangelogReleases
      */
     public function latest(): ?string
     {
+        return $this->versions()[0] ?? null;
+    }
+
+    /**
+     * The version of each dated section, in file order, which is newest first.
+     *
+     * @return list<string>
+     */
+    public function versions(): array
+    {
+        $versions = [];
         foreach ($this->lines as [$line, $fenced]) {
             if (!$fenced && preg_match(self::HEADING, $line, $m) === 1) {
-                return $m[1];
+                $versions[] = $m[1];
             }
         }
 
-        return null;
+        return $versions;
     }
 
     /**

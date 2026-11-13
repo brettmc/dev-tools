@@ -115,6 +115,36 @@ MD;
         $this->assertSame('[#14](https://github.com/open-telemetry/opentelemetry-php-contrib/pull/14)', $links->link('#14', self::REPOSITORY));
     }
 
+    public function test_links_to_a_url_by_reference(): void
+    {
+        $links = new ChangelogLinks(self::CHANGELOG);
+
+        $this->assertTrue($links->linksTo('A bug ([#12]).', 'https://github.com/open-telemetry/opentelemetry-php/pull/12'));
+        $this->assertFalse($links->linksTo('A bug ([#13]).', 'https://github.com/open-telemetry/opentelemetry-php/pull/12'));
+        $this->assertTrue((new ChangelogLinks("[PR]: https://x/1\n"))->linksTo('A bug ([pr]).', 'https://x/1'));
+    }
+
+    public function test_links_to_a_url_inline(): void
+    {
+        $links = new ChangelogLinks('');
+
+        $this->assertTrue($links->linksTo('A bug ([#12](https://x/12)).', 'https://x/12'));
+        $this->assertFalse($links->linksTo('A bug ([#12](https://x/123)).', 'https://x/12'));
+    }
+
+    public function test_an_undefined_reference_does_not_link(): void
+    {
+        $this->assertFalse((new ChangelogLinks(''))->linksTo('A bug ([#12]).', 'https://x/12'));
+    }
+
+    public function test_a_link_in_code_does_not_link(): void
+    {
+        $links = new ChangelogLinks(self::CHANGELOG);
+
+        $this->assertFalse($links->linksTo('A bug (`[#12]`).', 'https://github.com/open-telemetry/opentelemetry-php/pull/12'));
+        $this->assertFalse($links->linksTo('A bug (`[#12](https://x/12)`).', 'https://x/12'));
+    }
+
     public function test_first_definition_wins(): void
     {
         $changelog = "[x]: https://example.com/1\n[x]: https://example.com/2\n";
