@@ -11,9 +11,17 @@ namespace OpenTelemetry\DevTools\Package\Changelog;
 final class ChangelogLinks
 {
     private const DEFINITION = '/^\[([^\]]+)\]:\s*(\S+)/';
-    /** a shortcut reference: not part of `[text][label]` or `[text](url)` */
-    private const REFERENCE = '/(?<!\])\[([^\[\]]+)\](?![\[(])/';
-    private const INLINE = '/\[[^\[\]]*\]\(([^()\s]+)\)/';
+    /** a backslash before ASCII punctuation, which makes it literal */
+    private const ESCAPE = '\\\\[!-\/:-@\[-`{-~]';
+    /**
+     * a shortcut reference: not part of `[text][label]` or `[text](url)`. Escapes are matched too,
+     * without a label, so `\[` opens nothing and `\\[` still does.
+     */
+    private const REFERENCE = '/' . self::ESCAPE . '|(?<!\])\[([^\[\]]+)\](?![\[(])/';
+    /** an inline link with an optional title, or a full, collapsed or shortcut reference */
+    private const LINK = '/\[([^\[\]]*)\](?:\(\s*(?:<([^<>\n]*)>|([^\s()<>]+))(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^()]*\)))?\s*\)|\[([^\[\]]*)\])?/';
+    /** a code span, or an escape, neither of which can open or close a link */
+    private const CODE_OR_ESCAPE = '/(`+).*?\1|' . self::ESCAPE . '/';
 
     /** @var array<string, string> URL by lowercased label */
     private array $urls = [];
@@ -37,7 +45,7 @@ final class ChangelogLinks
     {
         return MarkdownText::outsideCode($text, fn (string $run): string => (string) preg_replace_callback(
             self::REFERENCE,
-            fn (array $m): string => $this->resolve($m[0], $m[1], $repository),
+            fn (array $m): string => isset($m[1]) ? $this->resolve($m[0], $m[1], $repository) : $m[0],
             $run
         ));
     }
@@ -63,23 +71,27 @@ final class ChangelogLinks
     }
 
     /**
-     * Whether $text, outside code, links to $url: by a reference defined as $url, or inline.
+     * Whether $text, outside code, links to $url: by a reference defined as $url, or inline. A
+     * link's text may hold code, so code spans are blanked out rather than split on.
      */
     public function linksTo(string $text, string $url): bool
     {
-        $found = false;
-        MarkdownText::outsideCode($text, function (string $run) use ($url, &$found): string {
-            preg_match_all(self::REFERENCE, $run, $references);
-            preg_match_all(self::INLINE, $run, $inline);
-            foreach ($references[1] as $label) {
-                $found = $found || ($this->urls[strtolower($label)] ?? null) === $url;
+        $fences = new CodeFences();
+        foreach (explode("\n", $text) as $index => $line) {
+            if ($fences->read($line, $index + 1)) {
+                continue;
             }
-            $found = $found || in_array($url, $inline[1], true);
+            preg_match_all(self::LINK, (string) preg_replace(self::CODE_OR_ESCAPE, "\0", $line), $links, PREG_SET_ORDER | PREG_UNMATCHED_AS_NULL);
+            foreach ($links as $link) {
+                $label = $link[4] ?? '';
+                $label = $label === '' ? (string) $link[1] : $label;
+                if (($link[2] ?? $link[3] ?? $this->urls[strtolower($label)] ?? null) === $url) {
+                    return true;
+                }
+            }
+        }
 
-            return $run;
-        });
-
-        return $found;
+        return false;
     }
 
     /**

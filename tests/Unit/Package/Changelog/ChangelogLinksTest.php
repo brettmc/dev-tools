@@ -93,6 +93,11 @@ MD;
         );
     }
 
+    public function test_escaped_bracket_is_left_alone(): void
+    {
+        $this->assertSame('A bug (\[#12]) and \\\\#12.', $this->inline('A bug (\[#12]) and \\\\[#12].'));
+    }
+
     public function test_definition_inside_a_code_block_is_not_a_definition(): void
     {
         $changelog = "## Unreleased\n\n### Added\n\n- Example:\n  ```md\n[x]: https://example.com/x\n  ```\n";
@@ -105,6 +110,11 @@ MD;
         $links = new ChangelogLinks(self::CHANGELOG);
 
         $this->assertSame(['#14', '#12'], $links->references('[#14], `[#13]`, [nope], [#12] and [#14]'));
+    }
+
+    public function test_references_skip_an_escaped_bracket(): void
+    {
+        $this->assertSame(['#12'], (new ChangelogLinks(self::CHANGELOG))->references('\[#14] and \\\\[#12]'));
     }
 
     public function test_link_resolves_one_label(): void
@@ -130,6 +140,40 @@ MD;
 
         $this->assertTrue($links->linksTo('A bug ([#12](https://x/12)).', 'https://x/12'));
         $this->assertFalse($links->linksTo('A bug ([#12](https://x/123)).', 'https://x/12'));
+    }
+
+    public function test_links_to_a_url_by_full_or_collapsed_reference(): void
+    {
+        $links = new ChangelogLinks(self::CHANGELOG);
+        $url = 'https://github.com/open-telemetry/opentelemetry-php/pull/12';
+
+        $this->assertTrue($links->linksTo('A bug ([the PR][#12]).', $url));
+        $this->assertTrue($links->linksTo('A bug ([#12][]).', $url));
+        $this->assertFalse($links->linksTo('A bug ([#12][#13]).', $url));
+    }
+
+    public function test_links_to_a_url_inline_with_a_title_or_angle_brackets(): void
+    {
+        $links = new ChangelogLinks('');
+
+        $this->assertTrue($links->linksTo('A bug ([#12](https://x/12 "the PR")).', 'https://x/12'));
+        $this->assertTrue($links->linksTo("A bug ([#12](https://x/12 'the PR')).", 'https://x/12'));
+        $this->assertTrue($links->linksTo('A bug ([#12](<https://x/12>)).', 'https://x/12'));
+    }
+
+    public function test_links_to_a_url_inline_with_code_in_the_label(): void
+    {
+        $this->assertTrue((new ChangelogLinks(''))->linksTo('Fix [`foo()`](https://x/12).', 'https://x/12'));
+    }
+
+    public function test_an_escaped_bracket_does_not_link(): void
+    {
+        $links = new ChangelogLinks(self::CHANGELOG);
+        $url = 'https://github.com/open-telemetry/opentelemetry-php/pull/12';
+
+        $this->assertFalse($links->linksTo('A bug (\[#12]).', $url));
+        $this->assertFalse($links->linksTo('A bug (\[#12](https://github.com/open-telemetry/opentelemetry-php/pull/12)).', $url));
+        $this->assertTrue($links->linksTo('A bug (\\\\[#12]).', $url));
     }
 
     public function test_an_undefined_reference_does_not_link(): void
