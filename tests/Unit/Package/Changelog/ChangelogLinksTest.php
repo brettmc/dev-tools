@@ -161,6 +161,20 @@ MD;
         $this->assertTrue($links->linksTo('A bug ([#12](<https://x/12>)).', 'https://x/12'));
     }
 
+    public function test_links_to_a_url_inline_with_parentheses_in_the_destination(): void
+    {
+        $this->assertTrue((new ChangelogLinks(''))->linksTo('A bug ([#12](https://x/fix_(old))).', 'https://x/fix_(old)'));
+    }
+
+    public function test_an_inline_link_elsewhere_does_not_resolve_its_label(): void
+    {
+        $links = new ChangelogLinks(self::CHANGELOG);
+        $url = 'https://github.com/open-telemetry/opentelemetry-php/pull/12';
+
+        $this->assertFalse($links->linksTo('A bug ([#12](https://example.com/fix_(old))).', $url));
+        $this->assertFalse($links->linksTo('A bug ([#12](https://example.com/other)).', $url));
+    }
+
     public function test_links_to_a_url_inline_with_code_in_the_label(): void
     {
         $this->assertTrue((new ChangelogLinks(''))->linksTo('Fix [`foo()`](https://x/12).', 'https://x/12'));

@@ -18,8 +18,13 @@ final class ChangelogLinks
      * without a label, so `\[` opens nothing and `\\[` still does.
      */
     private const REFERENCE = '/' . self::ESCAPE . '|(?<!\])\[([^\[\]]+)\](?![\[(])/';
-    /** an inline link with an optional title, or a full, collapsed or shortcut reference */
-    private const LINK = '/\[([^\[\]]*)\](?:\(\s*(?:<([^<>\n]*)>|([^\s()<>]+))(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^()]*\)))?\s*\)|\[([^\[\]]*)\])?/';
+    /** an inline destination, which may hold parentheses as long as they are balanced */
+    private const DESTINATION = '(?<destination>(?:[^\s()<>]++|(?<nested>\((?:[^()]++|(?&nested))*+\)))++)';
+    /**
+     * an inline link with an optional title, or a full, collapsed or shortcut reference. A `[text]`
+     * that opens no inline link is a shortcut, as markdown reads it.
+     */
+    private const LINK = '/\[(?<text>[^\[\]]*)\](?:\(\s*(?:<(?<angled>[^<>\n]*)>|' . self::DESTINATION . ')(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^()]*\)))?\s*\)|\[(?<label>[^\[\]]*)\])?/';
     /** a code span, or an escape, neither of which can open or close a link */
     private const CODE_OR_ESCAPE = '/(`+).*?\1|' . self::ESCAPE . '/';
 
@@ -83,9 +88,9 @@ final class ChangelogLinks
             }
             preg_match_all(self::LINK, (string) preg_replace(self::CODE_OR_ESCAPE, "\0", $line), $links, PREG_SET_ORDER | PREG_UNMATCHED_AS_NULL);
             foreach ($links as $link) {
-                $label = $link[4] ?? '';
-                $label = $label === '' ? (string) $link[1] : $label;
-                if (($link[2] ?? $link[3] ?? $this->urls[strtolower($label)] ?? null) === $url) {
+                $label = $link['label'] ?? '';
+                $label = $label === '' ? (string) $link['text'] : $label;
+                if (($link['angled'] ?? $link['destination'] ?? $this->urls[strtolower($label)] ?? null) === $url) {
                     return true;
                 }
             }
