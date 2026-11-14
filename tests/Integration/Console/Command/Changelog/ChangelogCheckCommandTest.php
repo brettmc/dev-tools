@@ -82,6 +82,16 @@ class ChangelogCheckCommandTest extends TestCase
         $this->assertStringNotContainsString('Add an entry', $this->display());
     }
 
+    public function test_file_moved_between_packages_changes_both(): void
+    {
+        $this->git('mv', 'src/API/a.php', 'src/SDK/b.php');
+        $this->commit('Move a file to SDK');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, CHANGELOG.md not updated$/m', $this->display());
+        $this->assertMatchesRegularExpression('/^  src\/SDK +changed, CHANGELOG.md not updated$/m', $this->display());
+    }
+
     public function test_entry_under_a_released_section_fails(): void
     {
         $this->write('src/API/CHANGELOG.md', self::RELEASED);
@@ -385,7 +395,47 @@ class ChangelogCheckCommandTest extends TestCase
         $this->commit('Document API');
 
         $this->assertSame(Command::SUCCESS, $this->check('HEAD^1', 'HEAD'));
-        $this->assertMatchesRegularExpression('/^  src\/API +Markdown only, no entry needed$/m', $this->display());
+        $this->assertMatchesRegularExpression('/^  src\/API +no source changed, no entry needed$/m', $this->display());
+    }
+
+    public function test_change_to_other_files_needs_no_entry(): void
+    {
+        $this->write('src/API/phpunit.xml.dist', '<phpunit/>');
+        $this->write('src/API/.gitattributes', '/tests export-ignore');
+        $this->commit('Configure API tests');
+
+        $this->assertSame(Command::SUCCESS, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +no source changed, no entry needed$/m', $this->display());
+    }
+
+    public function test_change_to_tests_and_examples_needs_no_entry(): void
+    {
+        $this->write('src/API/tests/Unit/ATest.php', '<?php');
+        $this->write('src/API/examples/a.php', '<?php');
+        $this->write('src/API/examples/app/composer.json', '{}');
+        $this->write('src/API/example/a.php', '<?php');
+        $this->commit('Test API');
+
+        $this->assertSame(Command::SUCCESS, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +no source changed, no entry needed$/m', $this->display());
+    }
+
+    public function test_php_under_a_source_directory_named_tests_needs_an_entry(): void
+    {
+        $this->write('src/API/src/tests/a.php', '<?php');
+        $this->commit('Change API');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, CHANGELOG.md not updated$/m', $this->display());
+    }
+
+    public function test_composer_json_change_needs_an_entry(): void
+    {
+        $this->write('src/API/composer.json', '{"require": {}}');
+        $this->commit('Change API dependencies');
+
+        $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +changed, CHANGELOG.md not updated$/m', $this->display());
     }
 
     public function test_split_without_a_changelog_fails(): void

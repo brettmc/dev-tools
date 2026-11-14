@@ -177,13 +177,18 @@ block that is not closed, or a second `## Unreleased`.
 `changelog:check` compares each changed package's `CHANGELOG.md` before and after a pull request.
 It fails when:
 
-- the package changed but its Unreleased entries didn't. An entry added under a released heading
-  doesn't count, nor does re-wrapping one,
+- the package's source changed but its Unreleased entries didn't. An entry added under a released
+  heading doesn't count, nor does re-wrapping one,
 - a released section changed or was removed. A new dated section, as `release:prep` adds, is fine,
 - the package has no `CHANGELOG.md`, or it was deleted,
 - with `--pr`, a new or reworded Unreleased entry doesn't link to that pull request,
 - the changelog doesn't parse with the [rules above](#write-changelog-entries). The error names
   the file and line.
+
+Source is a `.php` file or a `composer.json`, outside the package's `tests/`, `examples/` and
+`example/` directories. Those are the changes that can reach users. A change to anything else, such
+as a README, `phpunit.xml.dist` or a test, needs no entry. A file moved from one package to another
+changes both.
 
 It reads only the checkout. For each package with changed files it prints one status:
 
@@ -195,7 +200,7 @@ It reads only the checkout. For each package with changed files it prints one st
 | `changed, has no CHANGELOG.md` | Yes |
 | `CHANGELOG.md deleted` | Yes |
 | `CHANGELOG.md updated` | No |
-| `Markdown only, no entry needed` | No |
+| `no source changed, no entry needed` | No |
 
 Released sections and links are reported after the statuses, one line each:
 

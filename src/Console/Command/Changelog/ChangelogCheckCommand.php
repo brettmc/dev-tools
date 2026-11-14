@@ -338,29 +338,43 @@ class ChangelogCheckCommand extends BaseCommand
      */
     private function status(string $prefix, array $changed, bool $hasChangelog): ?string
     {
-        $source = $changelog = $docs = false;
+        $source = $changelog = $other = false;
         foreach ($changed as $file) {
             if (!str_starts_with($file, "{$prefix}/")) {
                 continue;
             }
-            if ($file === "{$prefix}/" . self::CHANGELOG_FILE) {
+            $file = substr($file, strlen($prefix) + 1);
+            if ($file === self::CHANGELOG_FILE) {
                 $changelog = true;
-            } elseif (str_ends_with($file, '.md')) {
-                $docs = true;
-            } else {
+            } elseif (self::isSource($file)) {
                 $source = true;
+            } else {
+                $other = true;
             }
         }
 
         return match (true) {
-            !$source && !$changelog && !$docs => null,
+            !$source && !$changelog && !$other => null,
             !$hasChangelog && $changelog => 'CHANGELOG.md deleted',
             !$hasChangelog => 'changed, has no CHANGELOG.md',
             $source && $changelog => 'changed, CHANGELOG.md updated',
             $source => 'changed, CHANGELOG.md not updated',
             $changelog => 'CHANGELOG.md updated',
-            default => 'Markdown only, no entry needed',
+            default => 'no source changed, no entry needed',
         };
+    }
+
+    /**
+     * Whether a change to $file, relative to its package, can reach users: PHP code or a
+     * composer.json, outside the package's tests and examples.
+     */
+    private static function isSource(string $file): bool
+    {
+        if (preg_match('#^(?:tests|examples?)/#', $file) === 1) {
+            return false;
+        }
+
+        return str_ends_with($file, '.php') || basename($file) === 'composer.json';
     }
 
     /**
