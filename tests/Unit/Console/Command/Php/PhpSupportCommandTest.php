@@ -239,6 +239,20 @@ class PhpSupportCommandTest extends TestCase
         $this->assertStringContainsString('--write and --check cannot be used together', $tester->getDisplay());
     }
 
+    public function test_errors_are_annotated_under_github_actions(): void
+    {
+        $tester = $this->tester();
+        putenv('GITHUB_ACTIONS=true');
+
+        try {
+            $tester->execute(['--path' => $this->path, '--write' => true, '--check' => true]);
+        } finally {
+            putenv('GITHUB_ACTIONS');
+        }
+
+        $this->assertStringContainsString('::error::--write and --check cannot be used together', $tester->getDisplay());
+    }
+
     /**
      * @dataProvider invalidOptions
      */

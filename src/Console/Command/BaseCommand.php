@@ -6,6 +6,7 @@ namespace OpenTelemetry\DevTools\Console\Command;
 
 use OpenTelemetry\DevTools\Util\Path;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
@@ -66,6 +67,20 @@ class BaseCommand extends Command
         }
 
         return $directory;
+    }
+
+    /**
+     * Report an error, also as a GitHub Actions annotation when run there, so it shows on the run's
+     * summary. The message is escaped, as it may hold text that looks like a style tag.
+     */
+    protected function fail(string $message): int
+    {
+        $this->output->writeln('<error>' . OutputFormatter::escape($message) . '</error>');
+        if (getenv('GITHUB_ACTIONS') !== false) {
+            $this->output->writeln('::error::' . strtr($message, ['%' => '%25', "\r" => '%0D', "\n" => '%0A']), OutputInterface::OUTPUT_RAW);
+        }
+
+        return Command::FAILURE;
     }
 
     protected function writeTitle(): void

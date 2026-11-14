@@ -14,7 +14,9 @@ use OpenTelemetry\DevTools\Console\Command\Release\PeclCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\PeclTagCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseListCommand;
+use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrepCommand;
+use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrStaleCommand;
 use Symfony\Component\Console\Application as BaseApplication;
 
 class Application extends BaseApplication
@@ -38,6 +40,8 @@ class Application extends BaseApplication
             new PeclTagCommand(),
             new BranchAliasCommand(),
             new ReleasePrepCommand(),
+            new ReleasePrCommand(),
+            new ReleasePrStaleCommand(),
             new SpiCheckCommand(),
             new ChangelogCheckCommand(),
             new PhpSupportCommand(),

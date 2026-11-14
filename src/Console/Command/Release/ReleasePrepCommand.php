@@ -32,6 +32,7 @@ use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
@@ -61,6 +62,8 @@ class ReleasePrepCommand extends AbstractReleaseCommand
     private int $failures = 0;
     /** heading of the list of file changes being printed */
     private ?string $changesHeading = null;
+    /** @var array<string, list<string>> the file changes printed, by heading */
+    private array $changeLines = [];
     /** @var array<PrepEntry> the assessed packages, for the JSON report */
     private array $entries = [];
     private ReleaseOrderReport $order;
@@ -303,6 +306,7 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             'constraint_warnings' => $this->order->warnings,
             'release' => in_array(true, array_map(static fn (PrepEntry $entry): bool => $entry->version !== null, $this->entries), true),
             'completed' => $completed,
+            'markdown' => $completed ? $this->markdown() : '',
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     }
 
@@ -477,6 +481,32 @@ class ReleasePrepCommand extends AbstractReleaseCommand
             $this->changesHeading = $heading;
         }
         $this->output->writeln("  {$line}");
+        $this->changeLines[$heading][] = $line;
+    }
+
+    /**
+     * The report as --format=markdown prints it, with the versions as decided.
+     */
+    private function markdown(): string
+    {
+        $output = $this->output;
+        $this->output = $buffer = new BufferedOutput();
+
+        try {
+            $this->report($this->entries, true);
+            $this->print_order($this->order);
+            foreach ($this->changeLines as $heading => $lines) {
+                $this->output->writeln('');
+                $this->output->writeln("{$heading}:");
+                foreach ($lines as $line) {
+                    $this->output->writeln("  {$line}");
+                }
+            }
+        } finally {
+            $this->output = $output;
+        }
+
+        return $buffer->fetch();
     }
 
     /**

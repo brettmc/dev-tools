@@ -8,6 +8,8 @@ use OpenTelemetry\DevTools\Console\Application\Application;
 use OpenTelemetry\DevTools\Console\Command\Changelog\ChangelogCheckCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\SpiCheckCommand;
 use OpenTelemetry\DevTools\Console\Command\Packages\ValidatePackagesCommand;
+use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrCommand;
+use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrStaleCommand;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -19,6 +21,8 @@ class ApplicationTest extends TestCase
         ValidatePackagesCommand::class,
         SpiCheckCommand::class,
         ChangelogCheckCommand::class,
+        ReleasePrCommand::class,
+        ReleasePrStaleCommand::class,
     ];
 
     public function test_commands(): void

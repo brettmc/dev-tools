@@ -39,6 +39,12 @@ PECL.
   - [Packages versioned from a file](#packages-versioned-from-a-file)
   - [Read the suggestions as JSON](#read-the-suggestions-as-json)
   - [Render a release dashboard issue](#render-a-release-dashboard-issue)
+- [Open a release pull request from CI](#open-a-release-pull-request-from-ci)
+  - [What release:pr does](#what-releasepr-does)
+  - [Change a version with the overrides block](#change-a-version-with-the-overrides-block)
+  - [Approve breaking changes](#approve-breaking-changes)
+  - [Mark the pull request stale](#mark-the-pull-request-stale)
+  - [Tokens and permissions](#tokens-and-permissions)
 - [Tag a release](#tag-a-release)
   - [Prepare the checkout](#prepare-the-checkout)
   - [How the split commit is found](#how-the-split-commit-is-found)
@@ -61,6 +67,8 @@ PECL.
 |---|---|---|
 | `changelog:check` | Checks that changed packages have an Unreleased entry, released sections are unchanged, and changed changelogs parse | Not used |
 | `release:prep` | Suggests each package's next version and prepares the changelogs, branch aliases and `replace` for tagging | Optional |
+| `release:pr` | Opens or rebuilds the release pull request, from `release:prep` on main | Required |
+| `release:pr:stale` | Marks the release pull request stale once main has moved past it | Required |
 | `release:run` | Tags and releases the split repositories | Required |
 | `update:branch-alias` | Moves each package's `dev-main` alias to its latest release | Optional |
 | `packages:spi:check` | Checks `#[PackageDependency]` constraints against the monorepo | Not used |
@@ -378,7 +386,8 @@ errors go to stderr. The object is printed however the prep ends.
     "order": ["open-telemetry/api", "open-telemetry/sdk"],
     "constraint_warnings": [],
     "release": true,
-    "completed": true
+    "completed": true,
+    "markdown": "| Package | Latest | Suggested | Reason |\n..."
 }
 ```
 
@@ -391,6 +400,8 @@ errors go to stderr. The object is printed however the prep ends.
 - `release` is true when anything is to be released.
 - `completed` is false, and the exit status non-zero, when the prep failed. The reason is on stderr.
   `packages` and `order` are empty if it failed before the packages were assessed.
+- `markdown` is the report `--format=markdown` prints: the table, warnings, tag order and changes.
+  It is empty when the prep failed.
 
 ```shell
 vendor/bin/otel release:prep -n --dry-run --format=json | jq '[.packages[].warnings[]] | length'
@@ -434,6 +445,121 @@ replace the issue body only when the command succeeds, and never with a partial 
 vendor/bin/otel release:prep -n --dry-run --format=dashboard > body.md
 gh issue edit "$ISSUE" --body-file body.md
 ```
+
+## Open a release pull request from CI
+
+`release:pr` runs `release:prep` on a checkout of main and opens a pull request with the result,
+from the branch `otelbot/release`. If that pull request is open, it is rebuilt instead. A rebuild
+starts again from main and replaces the branch, so the pull request never conflicts with main.
+
+`release:pr:stale` marks the pull request once main has moved past the commit it was built on.
+Nothing rebuilds the pull request when main moves.
+
+Both commands work on the release pull request of core or contrib, named with `--repository`.
+Only pull requests opened by `otelbot-php[bot]` from `otelbot/release` count. More than one open is
+an error.
+
+### What release:pr does
+
+1. Reads the overrides from the open pull request's description, if there is one.
+2. Runs `release:prep` once, without interaction, with `--format=json`, `--date` and one `--set`
+   per override. It prepares the changelogs, and its `markdown` report goes in the description.
+3. Closes the pull request and deletes its branch when there is nothing to release.
+4. Commits the changes as `otelbot-php[bot]`, as `Release <date>` with one line per package in tag
+   order.
+5. Writes the description, and updates it if the pull request is open.
+6. Pushes to `otelbot/release`, with a lease on the branch as fetched. A push that would change
+   nothing is skipped: the branch is built on the same commit of main and has the same content.
+7. Opens the pull request, if none was open.
+
+The checkout at `--path` is changed and committed, so use a fresh one. The date defaults to today in
+UTC.
+
+```shell
+vendor/bin/otel release:pr --repository=open-telemetry/opentelemetry-php
+```
+
+The description is updated before the push. A check that runs on the new commit then reads the new
+description. If the description was edited while the command ran, it fails without pushing. The
+edit starts a run of its own. If the push fails, the old description is put back, as the branch is
+unchanged.
+
+If main moved while the command ran, the new description starts with the stale note, as
+[release:pr:stale](#mark-the-pull-request-stale) may have run for that push and seen the old build.
+
+### Change a version with the overrides block
+
+The description ends with a block of overrides, one `<package>=<version|skip>` per line. The package
+is the composer name or the split repository name. Each line goes to `release:prep` as a `--set`
+value.
+
+````markdown
+```overrides
+sdk=1.16.0
+open-telemetry/exporter-zipkin=skip
+```
+````
+
+The description is untrusted text, so each line must match a strict pattern before it is used, and
+it is passed as an argument, never through a shell. An invalid line fails the run and is named.
+
+A workflow that runs on edits to the description passes `--rebuild-only`, with the description
+before the edit in `--previous-body-file`. The command then does nothing unless the pull request is
+open and its overrides changed. Pass `--sender` with the login of the user who made the edit or
+asked for the rebuild. They need write or admin access to the monorepo.
+
+```shell
+vendor/bin/otel release:pr --repository=open-telemetry/opentelemetry-php \
+  --rebuild-only --previous-body-file=before.md --sender="$SENDER"
+```
+
+### Approve breaking changes
+
+When a package has warnings, such as breaking entries or a new major version, or a constraint
+between packages breaks, the description asks for a tick:
+
+```markdown
+- [ ] I have read the breaking changes
+<!-- breaking: 646ae93db4df7370 -->
+```
+
+Core's `release-approval.yml` fails while the description holds the unticked line, exactly as above.
+That line is a contract: change it here and there together.
+
+The marker is a hash of the warnings. A rebuild keeps the tick while the hash is the same, and
+clears it when the warnings change. A tick typed by hand counts too, such as `* [X]` or extra
+spaces, as GitHub renders those as ticked.
+
+### Mark the pull request stale
+
+`release:pr:stale` compares the parent of the pull request's head commit with the tip of main. When
+they differ, it adds a note to the top of the description, ending in `<!-- stale -->`. A rebuild
+replaces the description, so the note goes with it.
+
+```shell
+vendor/bin/otel release:pr:stale --repository=open-telemetry/opentelemetry-php
+```
+
+The note is an edit to the description, so it starts any workflow that runs on edits. In core, that
+reruns the approval check. `release:pr` does not count the note as an edit made during its run.
+
+Just before it writes the note, the command reads the description again. If it changed since the
+pull request was listed, such as by a rebuild, it is left alone.
+
+### Tokens and permissions
+
+Both commands take the token in `GITHUB_TOKEN` or `--token`. It authors the pull request, the
+commit push and the edits, so use a GitHub App installation token where edits must start
+workflows. Edits made with a workflow's own `GITHUB_TOKEN` start none.
+
+| Command | Permissions on the monorepo |
+|---|---|
+| `release:pr` | Contents: write, Pull requests: write |
+| `release:pr:stale` | Contents: read, Pull requests: write |
+
+The same token goes to `release:prep`, which reads the latest release of each split repository. Those
+reads are public. The push sends the token in a header, never in the URL, so it does not appear in
+git's errors. It replaces any header `actions/checkout` left in the checkout's git config.
 
 ## Tag a release
 

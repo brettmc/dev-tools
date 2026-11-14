@@ -44,14 +44,14 @@ class PhpSupportCommand extends AbstractPhpSupportCommand
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $this->registerInputAndOutput($input, $output);
-        $path = $this->projectPath($input, $output);
+        $path = $this->projectPath($input);
         if ($path === null) {
             return Command::FAILURE;
         }
         $write = (bool) $input->getOption('write');
         $check = (bool) $input->getOption('check');
         if ($write && $check) {
-            return $this->fail($output, '--write and --check cannot be used together');
+            return $this->fail('--write and --check cannot be used together');
         }
 
         try {
@@ -63,7 +63,7 @@ class PhpSupportCommand extends AbstractPhpSupportCommand
 
             return $this->docs($input, $output, $report, $write, $path);
         } catch (InvalidArgumentException|RuntimeException $e) {
-            return $this->fail($output, $e->getMessage());
+            return $this->fail($e->getMessage());
         }
     }
 
