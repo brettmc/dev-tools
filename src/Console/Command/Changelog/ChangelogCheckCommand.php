@@ -366,11 +366,11 @@ class ChangelogCheckCommand extends BaseCommand
 
     /**
      * Whether a change to $file, relative to its package, can reach users: PHP code or a
-     * composer.json, outside the package's tests and examples.
+     * composer.json, outside the package's tests, examples and tool configs.
      */
     private static function isSource(string $file): bool
     {
-        if (preg_match('#^(?:tests|examples?)/#', $file) === 1) {
+        if (preg_match('#^(?:(?:tests|examples?|\.phan)/|\.php-cs-fixer\.php$|[^/]+\.neon\.php$)#', $file) === 1) {
             return false;
         }
 

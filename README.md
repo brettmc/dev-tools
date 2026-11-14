@@ -185,10 +185,16 @@ It fails when:
 - the changelog doesn't parse with the [rules above](#write-changelog-entries). The error names
   the file and line.
 
-Source is a `.php` file or a `composer.json`, outside the package's `tests/`, `examples/` and
-`example/` directories. Those are the changes that can reach users. A change to anything else, such
-as a README, `phpunit.xml.dist` or a test, needs no entry. A file moved from one package to another
-changes both.
+Source is what a package ships: a `.php` file or a `composer.json`. These don't count, with paths
+relative to the package:
+
+- `tests/`, `examples/` and `example/`
+- the tool configs `.phan/`, `.php-cs-fixer.php` and `*.neon.php` at the package root
+- everything that is not PHP or a `composer.json`, such as a README, `phpunit.xml.dist` or a
+  Dockerfile
+
+Only the package root is matched, so `src/tests/a.php` counts. A file moved from one package to
+another changes both.
 
 It reads only the checkout. For each package with changed files it prints one status:
 

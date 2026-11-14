@@ -420,6 +420,28 @@ class ChangelogCheckCommandTest extends TestCase
         $this->assertMatchesRegularExpression('/^  src\/API +no source changed, no entry needed$/m', $this->display());
     }
 
+    public function test_change_to_tool_configs_needs_no_entry(): void
+    {
+        $this->write('src/API/.phan/config.php', '<?php');
+        $this->write('src/API/.php-cs-fixer.php', '<?php');
+        $this->write('src/API/ignore-by-php-version.neon.php', '<?php');
+        $this->commit('Configure API tools');
+
+        $this->assertSame(Command::SUCCESS, $this->check('HEAD^1', 'HEAD'));
+        $this->assertMatchesRegularExpression('/^  src\/API +no source changed, no entry needed$/m', $this->display());
+    }
+
+    public function test_php_named_like_a_tool_config_below_the_package_root_needs_an_entry(): void
+    {
+        foreach (['src/API/src/.phan/config.php', 'src/API/src/.php-cs-fixer.php', 'src/API/src/a.neon.php'] as $file) {
+            $this->write($file, '<?php');
+            $this->commit("Add {$file}");
+
+            $this->assertSame(Command::FAILURE, $this->check('HEAD^1', 'HEAD'), $file);
+            $this->assertMatchesRegularExpression('/^  src\/API +changed, CHANGELOG.md not updated$/m', $this->display());
+        }
+    }
+
     public function test_php_under_a_source_directory_named_tests_needs_an_entry(): void
     {
         $this->write('src/API/src/tests/a.php', '<?php');
