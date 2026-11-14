@@ -11,8 +11,22 @@ namespace OpenTelemetry\DevTools\Package\Changelog;
 final class ChangelogLinks
 {
     private const DEFINITION = '/^\[([^\]]+)\]:\s*(\S+)/';
-    /** a shortcut reference: not part of `[text][label]` or `[text](url)` */
-    private const REFERENCE = '/(?<!\])\[([^\[\]]+)\](?![\[(])/';
+    /** a backslash before ASCII punctuation, which makes it literal */
+    private const ESCAPE = '\\\\[!-\/:-@\[-`{-~]';
+    /**
+     * a shortcut reference: not part of `[text][label]` or `[text](url)`. Escapes are matched too,
+     * without a label, so `\[` opens nothing and `\\[` still does.
+     */
+    private const REFERENCE = '/' . self::ESCAPE . '|(?<!\])\[([^\[\]]+)\](?![\[(])/';
+    /** an inline destination, which may hold parentheses as long as they are balanced */
+    private const DESTINATION = '(?<destination>(?:[^\s()<>]++|(?<nested>\((?:[^()]++|(?&nested))*+\)))++)';
+    /**
+     * an inline link with an optional title, or a full, collapsed or shortcut reference. A `[text]`
+     * that opens no inline link is a shortcut, as markdown reads it.
+     */
+    private const LINK = '/\[(?<text>[^\[\]]*)\](?:\(\s*(?:<(?<angled>[^<>\n]*)>|' . self::DESTINATION . ')(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^()]*\)))?\s*\)|\[(?<label>[^\[\]]*)\])?/';
+    /** a code span, or an escape, neither of which can open or close a link */
+    private const CODE_OR_ESCAPE = '/(`+).*?\1|' . self::ESCAPE . '/';
 
     /** @var array<string, string> URL by lowercased label */
     private array $urls = [];
@@ -36,7 +50,7 @@ final class ChangelogLinks
     {
         return MarkdownText::outsideCode($text, fn (string $run): string => (string) preg_replace_callback(
             self::REFERENCE,
-            fn (array $m): string => $this->resolve($m[0], $m[1], $repository),
+            fn (array $m): string => isset($m[1]) ? $this->resolve($m[0], $m[1], $repository) : $m[0],
             $run
         ));
     }
@@ -59,6 +73,30 @@ final class ChangelogLinks
         });
 
         return array_values(array_unique($labels));
+    }
+
+    /**
+     * Whether $text, outside code, links to $url: by a reference defined as $url, or inline. A
+     * link's text may hold code, so code spans are blanked out rather than split on.
+     */
+    public function linksTo(string $text, string $url): bool
+    {
+        $fences = new CodeFences();
+        foreach (explode("\n", $text) as $index => $line) {
+            if ($fences->read($line, $index + 1)) {
+                continue;
+            }
+            preg_match_all(self::LINK, (string) preg_replace(self::CODE_OR_ESCAPE, "\0", $line), $links, PREG_SET_ORDER | PREG_UNMATCHED_AS_NULL);
+            foreach ($links as $link) {
+                $label = $link['label'] ?? '';
+                $label = $label === '' ? (string) $link['text'] : $label;
+                if (($link['angled'] ?? $link['destination'] ?? $this->urls[strtolower($label)] ?? null) === $url) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

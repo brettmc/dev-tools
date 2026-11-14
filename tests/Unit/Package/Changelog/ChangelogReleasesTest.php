@@ -57,6 +57,27 @@ MD;
         $this->assertNull((new ChangelogReleases("# Changelog\n\n## Unreleased\n\n## 1.0.0 and earlier\n"))->latest());
     }
 
+    public function test_versions_are_every_dated_heading_newest_first(): void
+    {
+        $this->assertSame(['1.45.0', '1.44.0'], (new ChangelogReleases(self::CHANGELOG))->versions());
+    }
+
+    public function test_versions_skip_headings_in_a_code_block(): void
+    {
+        $changelog = "## 1.0.0 - 2026-01-01\n\n- An example:\n  ```\n## 0.9.0 - 2025-01-01\n  ```\n";
+
+        $this->assertSame(['1.0.0'], (new ChangelogReleases($changelog))->versions());
+    }
+
+    public function test_heading_is_the_dated_line_of_the_version(): void
+    {
+        $releases = new ChangelogReleases(self::CHANGELOG);
+
+        $this->assertSame('## 1.44.0 - 2026-10-01', $releases->heading('1.44.0'));
+        $this->assertSame('## 1.44.0 - 2026-10-01', $releases->heading('v1.44.0'));
+        $this->assertNull($releases->heading('1.46.0'));
+    }
+
     public function test_notes_are_the_body_of_the_dated_section(): void
     {
         $this->assertSame(

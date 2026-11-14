@@ -29,6 +29,9 @@ PECL.
 - [Release a monorepo, step by step](#release-a-monorepo-step-by-step)
 - [Write changelog entries](#write-changelog-entries)
 - [Check changelogs in a pull request](#check-changelogs-in-a-pull-request)
+  - [Run it in a pull request workflow](#run-it-in-a-pull-request-workflow)
+  - [Run it before pushing](#run-it-before-pushing)
+  - [Skip the check](#skip-the-check)
 - [Prepare a release](#prepare-a-release)
   - [Start from an up-to-date checkout](#start-from-an-up-to-date-checkout)
   - [What release:prep changes](#what-releaseprep-changes)
@@ -56,7 +59,7 @@ PECL.
 
 | Command | What it does | GitHub token |
 |---|---|---|
-| `changelog:check` | Checks that changed packages have a changelog entry, and that changed changelogs parse | Not used |
+| `changelog:check` | Checks that changed packages have an Unreleased entry, released sections are unchanged, and changed changelogs parse | Not used |
 | `release:prep` | Suggests each package's next version and prepares the changelogs, branch aliases and `replace` for tagging | Optional |
 | `release:run` | Tags and releases the split repositories | Required |
 | `update:branch-alias` | Moves each package's `dev-main` alias to its latest release | Optional |
@@ -171,48 +174,96 @@ block that is not closed, or a second `## Unreleased`.
 
 ## Check changelogs in a pull request
 
-`changelog:check` checks that each package a pull request changes has an entry in its `CHANGELOG.md`.
-Then it parses each changed `CHANGELOG.md` with the [rules above](#write-changelog-entries), and fails
-on an error, naming the file and line. It reads only the checkout.
+`changelog:check` compares each changed package's `CHANGELOG.md` before and after a pull request.
+It fails when:
 
-For each package with changed files it prints one status:
+- the package's source changed but its Unreleased entries didn't. An entry added under a released
+  heading doesn't count, nor does re-wrapping one,
+- a released section changed or was removed. A new dated section, as `release:prep` adds, is fine,
+- the package has no `CHANGELOG.md`, or it was deleted,
+- with `--pr`, a new or reworded Unreleased entry doesn't link to that pull request,
+- the changelog doesn't parse with the [rules above](#write-changelog-entries). The error names
+  the file and line.
+
+Source is what a package ships: a `.php` file or a `composer.json`. These don't count, with paths
+relative to the package:
+
+- `tests/`, `examples/` and `example/`
+- the tool configs `.phan/`, `.php-cs-fixer.php` and `*.neon.php` at the package root
+- everything that is not PHP or a `composer.json`, such as a README, `phpunit.xml.dist` or a
+  Dockerfile
+
+Only the package root is matched, so `src/tests/a.php` counts. A file moved from one package to
+another changes both.
+
+It reads only the checkout. For each package with changed files it prints one status:
 
 | Status | Fails |
 |---|---|
 | `changed, CHANGELOG.md updated` | No |
 | `changed, CHANGELOG.md not updated` | Yes |
-| `changed, has no CHANGELOG.md` | No |
+| `changed, Unreleased not updated` | Yes |
+| `changed, has no CHANGELOG.md` | Yes |
 | `CHANGELOG.md deleted` | Yes |
 | `CHANGELOG.md updated` | No |
-| `Markdown only, no entry needed` | No |
+| `no source changed, no entry needed` | No |
+
+Released sections and links are reported after the statuses, one line each:
+
+```text
+src/SDK/CHANGELOG.md: released section 1.17.0 changed
+src/SDK/CHANGELOG.md: entry doesn't link to #2130: Exclude requests by header.
+```
 
 Under GitHub Actions (`GITHUB_ACTIONS` set), each failure is also printed as an `::error` workflow
 command, which marks the file in the pull request.
 
-The arguments are revisions for `git diff`. A pull request workflow checks out its merge commit with
-`fetch-depth: 2`, and compares it with its first parent, the base branch:
+### Run it in a pull request workflow
 
-```shell
-vendor/bin/otel changelog:check HEAD^1 HEAD
+The arguments are revisions for `git diff`. A pull request workflow checks out its merge commit with
+`fetch-depth: 2`, and compares it with its first parent, the base branch. Pass the pull request
+number through `env:`, not `${{ }}` in `run:`:
+
+```yaml
+- name: Check changelogs
+  env:
+    PR: ${{ github.event.pull_request.number }}
+  run: vendor/bin/otel changelog:check --pr="$PR" HEAD^1 HEAD
 ```
 
+`--pr` needs `project_url` in `.gitsplit.yml`, to build the pull request's URL. An entry links to it
+with a reference, `([#2130])` and a `[#2130]: https://...` definition, or an inline link. Entries
+already under Unreleased before the pull request need no link. When an entry has none, the output
+gives the text to add.
+
 Changelogs are read as they are in the last revision, so the result doesn't depend on what is checked
-out. `A..B` and `A...B` are read at `B`. One revision is compared with the working tree, as `git diff`
-does.
+out. They are compared with the first revision. `A..B` compares `A` with `B`, and `A...B` compares
+their merge base with `B`. One revision is compared with the working tree, as `git diff` does.
+
+A changelog that doesn't parse at the first revision counts as an empty Unreleased, so a pull request
+that fixes it isn't blamed for it. With `--pr`, each of its entries then needs the link.
+
+### Run it before pushing
 
 Without arguments it checks everything since the merge base with `origin/main`, including uncommitted
-and untracked files, and parses every changelog. Run that before pushing:
+and untracked files, and parses every changelog:
 
 ```shell
 vendor/bin/otel changelog:check
 ```
 
+Leave out `--pr` until the pull request is open and has a number.
+
+### Skip the check
+
 A change that doesn't affect users needs no entry. A maintainer can skip the check by adding the
-`skip-changelog` label to the pull request, which the workflow tests in its `if:`.
+`skip-changelog` label to the pull request, which the workflow tests in its `if:`. The same label
+lets through a deliberate correction to a released section.
 
 | Option | Meaning |
 |---|---|
 | `--path` | Monorepo checkout (default: working directory) |
+| `--pr` | Pull request number. Each new Unreleased entry must link to it |
 
 ## Prepare a release
 
