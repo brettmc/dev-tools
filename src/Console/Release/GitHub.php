@@ -205,6 +205,109 @@ class GitHub
     }
 
     /**
+     * The open pull requests from $branch of $repository itself, opened by $author. The list
+     * endpoint cannot filter by author, so the others are dropped here.
+     *
+     * @return list<array{number: int, body: string, head: string}> head is the sha of the head commit
+     */
+    public function openPullRequests(string $repository, string $branch, string $author): array
+    {
+        $owner = explode('/', $repository, 2)[0];
+        $url = self::API . "{$repository}/pulls?state=open&head=" . rawurlencode("{$owner}:{$branch}") . '&per_page=' . self::PER_PAGE;
+        $pulls = [];
+        while ($url !== null) {
+            $response = $this->send('GET', $url);
+            foreach (self::list($this->decode('GET', $url, $response, 200), $url) as $pull) {
+                if (self::string(self::object($pull, 'user', $url), 'login', $url) !== $author) {
+                    continue;
+                }
+                $pulls[] = [
+                    'number' => self::int($pull, 'number', $url),
+                    'body' => self::body($pull, $url),
+                    'head' => self::string(self::object($pull, 'head', $url), 'sha', $url),
+                ];
+            }
+            $url = self::next($response);
+        }
+
+        return $pulls;
+    }
+
+    /**
+     * @return array{title: string, body: string}
+     */
+    public function pullRequest(string $repository, int $number): array
+    {
+        $url = self::API . "{$repository}/pulls/{$number}";
+        $pull = $this->expect('GET', $url, 200);
+
+        return ['title' => self::string($pull, 'title', $url), 'body' => self::body($pull, $url)];
+    }
+
+    /**
+     * Set the body of a pull request, and its title unless $title is null.
+     */
+    public function editPullRequest(string $repository, int $number, ?string $title, string $body): void
+    {
+        $fields = $title === null ? ['body' => $body] : ['title' => $title, 'body' => $body];
+        $this->expect('PATCH', self::API . "{$repository}/pulls/{$number}", 200, $fields);
+    }
+
+    /**
+     * @return string the URL of the pull request on github.com
+     */
+    public function createPullRequest(string $repository, string $base, string $head, string $title, string $body): string
+    {
+        $url = self::API . "{$repository}/pulls";
+
+        return self::string($this->expect('POST', $url, 201, ['title' => $title, 'head' => $head, 'base' => $base, 'body' => $body]), 'html_url', $url);
+    }
+
+    /**
+     * Comment on a pull request, close it, and delete its head branch. A branch in another
+     * repository, such as a fork, is left alone.
+     */
+    public function closePullRequest(string $repository, int $number, string $comment): void
+    {
+        $this->expect('POST', self::API . "{$repository}/issues/{$number}/comments", 201, ['body' => $comment]);
+        $url = self::API . "{$repository}/pulls/{$number}";
+        $head = self::object($this->expect('PATCH', $url, 200, ['state' => 'closed']), 'head', $url);
+        $repo = self::object($head, 'repo', $url);
+        if (!is_array($repo) || ($repo['full_name'] ?? null) !== $repository) {
+            return;
+        }
+        $ref = self::API . "{$repository}/git/refs/heads/" . self::string($head, 'ref', $url);
+        $response = $this->send('DELETE', $ref);
+        if ($response->getStatusCode() !== 204) {
+            $this->decode('DELETE', $ref, $response, 204);
+        }
+    }
+
+    /**
+     * The permission $user has on $repository: admin, write, read or none. `maintain` and
+     * `triage` are folded into write and read by GitHub here.
+     */
+    public function permission(string $repository, string $user): string
+    {
+        $url = self::API . "{$repository}/collaborators/" . rawurlencode($user) . '/permission';
+
+        return self::string($this->expect('GET', $url, 200), 'permission', $url);
+    }
+
+    /**
+     * @return list<string> the shas of the parents of $sha
+     */
+    public function parents(string $repository, string $sha): array
+    {
+        $url = self::API . "{$repository}/commits/{$sha}";
+
+        return array_map(
+            static fn (mixed $parent): string => self::string($parent, 'sha', $url),
+            self::list(self::object($this->expect('GET', $url, 200), 'parents', $url), $url),
+        );
+    }
+
+    /**
      * Create the label, unless it exists. A 422 is only fine when it says so: it is also what a
      * label that GitHub rejects gets.
      */
@@ -326,6 +429,24 @@ class GitHub
         }
 
         return $value;
+    }
+
+    private static function int(mixed $data, string $key, string $url): int
+    {
+        $value = self::object($data, $key, $url);
+        if (!is_int($value)) {
+            throw new GitHubException("{$url}: {$key} in the response is not a number");
+        }
+
+        return $value;
+    }
+
+    /**
+     * The body of an issue or pull request. GitHub sends null for an empty one.
+     */
+    private static function body(mixed $data, string $url): string
+    {
+        return self::object($data, 'body', $url) === null ? '' : self::string($data, 'body', $url);
     }
 
     /**

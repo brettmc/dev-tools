@@ -365,6 +365,179 @@ class GitRunnerTest extends TestCase
         $this->assertTrue((new GitRunner())->isShallow($clone));
     }
 
+    public function test_commit_all_commits_tracked_changes_as_the_given_author(): void
+    {
+        $parent = $this->commit();
+        file_put_contents($this->dir . '/composer.json', '{"name":"changed"}');
+        file_put_contents($this->dir . '/untracked.txt', 'not committed');
+
+        $sha = (new GitRunner())->commitAll($this->dir, "Release 2026-11-14\n\nopen-telemetry/api 1.2.0\n", 'bot[bot]', 'bot@example.com');
+
+        $this->assertSame($sha, trim($this->git('rev-parse', 'HEAD')));
+        $this->assertSame($parent, trim($this->git('rev-parse', 'HEAD^')));
+        $this->assertSame("bot[bot] <bot@example.com>\nRelease 2026-11-14\n\nopen-telemetry/api 1.2.0", rtrim($this->git('log', '-1', '--format=%an <%ae>%n%B'), "\n"));
+        $this->assertSame("?? untracked.txt\n", $this->git('status', '--porcelain'));
+    }
+
+    public function test_commit_all_fails_with_nothing_to_commit(): void
+    {
+        $this->commit();
+
+        $this->expectException(RuntimeException::class);
+
+        (new GitRunner())->commitAll($this->dir, 'Empty', 'bot', 'bot@example.com');
+    }
+
+    public function test_fetch_answers_the_sha_of_the_branch(): void
+    {
+        [$remote, $work] = $this->remote();
+        $sha = $this->pushBranch($remote, 'otelbot/release');
+
+        $this->assertSame($sha, (new GitRunner())->fetch($work, 'file://' . $remote, 'otelbot/release'));
+        $this->assertSame($sha, trim($this->git('-C', $work, 'rev-parse', 'FETCH_HEAD')));
+    }
+
+    public function test_fetch_of_a_branch_that_does_not_exist_answers_null(): void
+    {
+        [$remote, $work] = $this->remote();
+
+        $this->assertNull((new GitRunner())->fetch($work, 'file://' . $remote, 'otelbot/release'));
+    }
+
+    public function test_fetch_from_a_remote_that_cannot_be_read_fails(): void
+    {
+        [, $work] = $this->remote();
+
+        $this->expectException(RuntimeException::class);
+
+        (new GitRunner())->fetch($work, 'file://' . $this->dir . '/nowhere.git', 'otelbot/release');
+    }
+
+    public function test_fetch_into_a_shallow_clone_brings_the_parent(): void
+    {
+        [$remote] = $this->remote();
+        $sha = $this->pushBranch($remote, 'otelbot/release');
+        $shallow = $this->dir . '/shallow';
+        $this->git('clone', '--quiet', '--depth=1', 'file://' . $remote, $shallow);
+
+        $git = new GitRunner();
+        $this->assertSame($sha, $git->fetch($shallow, 'file://' . $remote, 'otelbot/release'));
+        $this->assertSame(trim($this->git('-C', $remote, 'rev-parse', 'main')), $git->parent($shallow, $sha));
+    }
+
+    public function test_parent_of_a_root_commit_is_null(): void
+    {
+        $sha = $this->commit();
+
+        $this->assertNull((new GitRunner())->parent($this->dir, $sha));
+    }
+
+    public function test_same_tree_compares_content_not_commits(): void
+    {
+        $first = $this->commit('Same');
+        $this->git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '--allow-empty', '-m', 'Empty');
+        $empty = trim($this->git('rev-parse', 'HEAD'));
+        $changed = $this->commit('Changed');
+
+        $git = new GitRunner();
+        $this->assertTrue($git->sameTree($this->dir, $first, $empty));
+        $this->assertFalse($git->sameTree($this->dir, $first, $changed));
+    }
+
+    public function test_push_creates_a_branch_that_must_not_exist(): void
+    {
+        [$remote, $work] = $this->remote();
+        $head = trim($this->git('-C', $work, 'rev-parse', 'HEAD'));
+
+        (new GitRunner())->push($work, 'file://' . $remote, 'otelbot/release', '', 'secret');
+
+        $this->assertSame($head, trim($this->git('-C', $remote, 'rev-parse', 'otelbot/release')));
+    }
+
+    public function test_push_with_an_empty_lease_fails_when_the_branch_exists(): void
+    {
+        [$remote, $work] = $this->remote();
+        $this->pushBranch($remote, 'otelbot/release');
+
+        $this->expectException(RuntimeException::class);
+
+        (new GitRunner())->push($work, 'file://' . $remote, 'otelbot/release', '', null);
+    }
+
+    public function test_push_replaces_the_branch_at_the_lease(): void
+    {
+        [$remote, $work] = $this->remote();
+        $lease = $this->pushBranch($remote, 'otelbot/release');
+        $head = trim($this->git('-C', $work, 'rev-parse', 'HEAD'));
+
+        (new GitRunner())->push($work, 'file://' . $remote, 'otelbot/release', $lease, null);
+
+        $this->assertSame($head, trim($this->git('-C', $remote, 'rev-parse', 'otelbot/release')));
+    }
+
+    public function test_push_fails_when_the_branch_moved_from_the_lease(): void
+    {
+        [$remote, $work] = $this->remote();
+        $lease = $this->pushBranch($remote, 'otelbot/release');
+        $moved = $this->pushBranch($remote, 'otelbot/release', 'Moved');
+
+        try {
+            (new GitRunner())->push($work, 'file://' . $remote, 'otelbot/release', $lease, 'secret');
+            $this->fail('no exception');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('stale info', $e->getMessage());
+            $this->assertStringNotContainsString('secret', $e->getMessage());
+        }
+        $this->assertSame($moved, trim($this->git('-C', $remote, 'rev-parse', 'otelbot/release')));
+    }
+
+    public function test_a_failed_push_does_not_show_the_token(): void
+    {
+        [, $work] = $this->remote();
+
+        try {
+            //nothing listens there, so git fails before sending anything
+            (new GitRunner())->push($work, 'https://127.0.0.1:1/o/r.git', 'otelbot/release', '', 'secret');
+            $this->fail('no exception');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('127.0.0.1', $e->getMessage());
+            $this->assertStringNotContainsString('secret', $e->getMessage());
+        }
+    }
+
+    /**
+     * A bare repository with one commit on main, and a clone of it with a second commit on top.
+     *
+     * @return array{0: string, 1: string} the bare repository and the clone
+     */
+    private function remote(): array
+    {
+        $this->commit();
+        $remote = $this->dir . '/remote.git';
+        $work = $this->dir . '/work';
+        $this->git('branch', '--quiet', '-M', 'main');
+        $this->git('clone', '--quiet', '--bare', $this->dir, $remote);
+        $this->git('clone', '--quiet', 'file://' . $remote, $work);
+        file_put_contents($work . '/composer.json', '{"name":"work"}');
+        $this->git('-C', $work, '-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '--all', '-m', 'Work');
+
+        return [$remote, $work];
+    }
+
+    /**
+     * Push a new commit on top of main to $branch of $remote, as another run would.
+     */
+    private function pushBranch(string $remote, string $branch, string $message = 'Other run'): string
+    {
+        $other = $this->dir . '/other-' . bin2hex(random_bytes(2));
+        $this->git('clone', '--quiet', 'file://' . $remote, $other);
+        file_put_contents($other . '/composer.json', json_encode(['message' => $message]));
+        $this->git('-C', $other, '-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '--all', '-m', $message);
+        $this->git('-C', $other, 'push', '--quiet', '--force', 'origin', "HEAD:refs/heads/{$branch}");
+
+        return trim($this->git('-C', $other, 'rev-parse', 'HEAD'));
+    }
+
     private function commit(string $message = 'Initial'): string
     {
         is_dir($this->dir . '/.git') || $this->git('init', '--quiet');

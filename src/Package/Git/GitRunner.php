@@ -195,6 +195,97 @@ class GitRunner
     }
 
     /**
+     * Commit every change to a tracked file, as $name <$email>.
+     *
+     * @throws RuntimeException with git's own error, when there is nothing to commit
+     * @return string the sha of the new commit
+     */
+    public function commitAll(string $path, string $message, string $name, string $email): string
+    {
+        $this->run($path, ['-c', "user.name={$name}", '-c', "user.email={$email}", 'commit', '--all', '--quiet', '--file=-'], $message);
+
+        return $this->head($path);
+    }
+
+    /**
+     * Fetch $branch of $remote with its parent, which is enough to compare it with a commit built
+     * on the parent.
+     *
+     * @throws RuntimeException with git's own error, when $remote cannot be read
+     * @return string|null the sha of the branch, or null when $remote has no such branch
+     */
+    public function fetch(string $path, string $remote, string $branch): ?string
+    {
+        //ls-remote exits 2 for no such branch, which tells it apart from a remote that cannot be read
+        $process = new Process([$this->git, 'ls-remote', '--exit-code', '--heads', $remote, "refs/heads/{$branch}"], $path);
+        $process->run();
+        if ($process->getExitCode() === 2) {
+            return null;
+        }
+        if (!$process->isSuccessful()) {
+            throw new RuntimeException(trim($process->getErrorOutput()) ?: "git ls-remote failed in {$path}");
+        }
+        $this->run($path, ['fetch', '--quiet', '--depth=2', $remote, "refs/heads/{$branch}"]);
+
+        return trim($this->run($path, ['rev-parse', '--verify', 'FETCH_HEAD']));
+    }
+
+    /**
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout
+     * @return string|null the first parent of $sha, or null for a root commit
+     */
+    public function parent(string $path, string $sha): ?string
+    {
+        if (!$this->test($path, ['rev-parse', '--verify', '--quiet', '--end-of-options', "{$sha}^"])) {
+            return null;
+        }
+
+        return trim($this->run($path, ['rev-parse', '--verify', '--end-of-options', "{$sha}^"]));
+    }
+
+    /**
+     * Whether $a and $b have the same content.
+     *
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout or either
+     *         commit is not in it
+     */
+    public function sameTree(string $path, string $a, string $b): bool
+    {
+        return $this->test($path, ['diff', '--quiet', '--end-of-options', $a, $b, '--']);
+    }
+
+    /**
+     * Push HEAD to $branch of $remote, if $branch is still at $lease. An empty $lease means the
+     * branch must not exist.
+     *
+     * The token goes in an Authorization header set through the environment, so it is not in the
+     * URL or the arguments, where git and process listings show them.
+     *
+     * @throws RuntimeException with git's own error, when the push is refused
+     */
+    public function push(string $path, string $remote, string $branch, string $lease, ?string $token): void
+    {
+        $env = [];
+        if ($token !== null) {
+            $env = [
+                'GIT_CONFIG_COUNT' => '1',
+                'GIT_CONFIG_KEY_0' => 'http.extraheader',
+                'GIT_CONFIG_VALUE_0' => 'Authorization: Basic ' . base64_encode("x-access-token:{$token}"),
+            ];
+        }
+
+        try {
+            $this->run($path, ['push', '--quiet', "--force-with-lease=refs/heads/{$branch}:{$lease}", $remote, "HEAD:refs/heads/{$branch}"], env: $env);
+        } catch (RuntimeException $e) {
+            if ($token === null || $token === '') {
+                throw $e;
+            }
+
+            throw new RuntimeException(str_replace($token, '***', $e->getMessage()));
+        }
+    }
+
+    /**
      * Run a git command that answers yes or no by exiting 0 or 1. Any other exit is an error.
      *
      * @param list<string> $args
@@ -213,10 +304,11 @@ class GitRunner
 
     /**
      * @param list<string> $args
+     * @param array<string, string> $env
      */
-    private function run(string $path, array $args): string
+    private function run(string $path, array $args, ?string $input = null, array $env = []): string
     {
-        $process = new Process([$this->git, ...$args], $path);
+        $process = new Process([$this->git, ...$args], $path, $env ?: null, $input);
         $process->run();
         if (!$process->isSuccessful()) {
             throw new RuntimeException(trim($process->getErrorOutput()) ?: "git {$args[0]} failed in {$path}");

@@ -388,6 +388,146 @@ class GitHubTest extends TestCase
         $this->github->createIssue('o/r', 'Title', 'Body');
     }
 
+    public function test_open_pull_requests_from_a_branch_by_one_author(): void
+    {
+        $this->respond(self::API . '/pulls?state=open&head=o%3Aotelbot%2Frelease&per_page=100', [
+            self::pull(7, 'otelbot-php[bot]', "Body\r\nof 7", 'sha-7'),
+            self::pull(8, 'someone', 'Not the bot', 'sha-8'),
+            self::pull(9, 'otelbot-php[bot]', null, 'sha-9'),
+        ]);
+
+        $this->assertSame([
+            ['number' => 7, 'body' => "Body\r\nof 7", 'head' => 'sha-7'],
+            ['number' => 9, 'body' => '', 'head' => 'sha-9'],
+        ], $this->github->openPullRequests('o/r', 'otelbot/release', 'otelbot-php[bot]'));
+    }
+
+    public function test_open_pull_requests_follow_the_pages(): void
+    {
+        $first = self::API . '/pulls?state=open&head=o%3Ab&per_page=100';
+        $second = $first . '&page=2';
+        $this->respond($first, [self::pull(1, 'bot', 'One', 'a')], 200, ['Link' => "<{$second}>; rel=\"next\""]);
+        $this->respond($second, [self::pull(2, 'bot', 'Two', 'b')]);
+
+        $this->assertSame([1, 2], array_column($this->github->openPullRequests('o/r', 'b', 'bot'), 'number'));
+    }
+
+    public function test_open_pull_requests_fail_for_a_malformed_pull_request(): void
+    {
+        $this->respond(self::API . '/pulls?state=open&head=o%3Ab&per_page=100', [['number' => '7', 'user' => ['login' => 'bot']]]);
+
+        $this->expectException(GitHubException::class);
+        $this->expectExceptionMessage('number');
+
+        $this->github->openPullRequests('o/r', 'b', 'bot');
+    }
+
+    public function test_pull_request_title_and_body(): void
+    {
+        $this->respond(self::API . '/pulls/7', ['title' => 'Release 2026-11-14', 'body' => 'Body']);
+
+        $this->assertSame(['title' => 'Release 2026-11-14', 'body' => 'Body'], $this->github->pullRequest('o/r', 7));
+    }
+
+    public function test_pull_request_without_a_body_has_an_empty_one(): void
+    {
+        $this->respond(self::API . '/pulls/7', ['title' => 'Release', 'body' => null]);
+
+        $this->assertSame(['title' => 'Release', 'body' => ''], $this->github->pullRequest('o/r', 7));
+    }
+
+    public function test_edit_pull_request(): void
+    {
+        $this->respond(self::API . '/pulls/7', ['number' => 7]);
+
+        $this->github->editPullRequest('o/r', 7, 'Release 2026-11-14', 'Body');
+
+        $this->assertSame('PATCH', $this->requests[0]->getMethod());
+        $this->assertSame(['title' => 'Release 2026-11-14', 'body' => 'Body'], json_decode((string) $this->requests[0]->getBody(), true));
+    }
+
+    public function test_edit_pull_request_body_only_leaves_the_title(): void
+    {
+        $this->respond(self::API . '/pulls/7', ['number' => 7]);
+
+        $this->github->editPullRequest('o/r', 7, null, 'Body');
+
+        $this->assertSame(['body' => 'Body'], json_decode((string) $this->requests[0]->getBody(), true));
+    }
+
+    public function test_edit_pull_request_that_fails(): void
+    {
+        $this->respond(self::API . '/pulls/7', ['message' => 'Resource not accessible by integration'], 403);
+
+        $this->expectException(GitHubException::class);
+        $this->expectExceptionMessage('PATCH ' . self::API . '/pulls/7: 403');
+
+        $this->github->editPullRequest('o/r', 7, null, 'Body');
+    }
+
+    public function test_create_pull_request_returns_its_url(): void
+    {
+        $this->respond(self::API . '/pulls', ['html_url' => 'https://github.com/o/r/pull/7'], 201);
+
+        $this->assertSame('https://github.com/o/r/pull/7', $this->github->createPullRequest('o/r', 'main', 'otelbot/release', 'Release', 'Body'));
+        $this->assertSame(
+            ['title' => 'Release', 'head' => 'otelbot/release', 'base' => 'main', 'body' => 'Body'],
+            json_decode((string) $this->requests[0]->getBody(), true),
+        );
+    }
+
+    public function test_close_pull_request_comments_closes_and_deletes_the_branch(): void
+    {
+        $this->respond(self::API . '/issues/7/comments', ['id' => 1], 201);
+        $this->respond(self::API . '/pulls/7', ['head' => ['ref' => 'otelbot/release', 'repo' => ['full_name' => 'o/r']]]);
+        $this->responses[self::API . '/git/refs/heads/otelbot/release'] = new Response(204);
+
+        $this->github->closePullRequest('o/r', 7, 'Nothing to release.');
+
+        $this->assertSame(
+            ['POST /repos/o/r/issues/7/comments', 'PATCH /repos/o/r/pulls/7', 'DELETE /repos/o/r/git/refs/heads/otelbot/release'],
+            array_map(static fn (RequestInterface $r): string => $r->getMethod() . ' ' . $r->getUri()->getPath(), $this->requests),
+        );
+        $this->assertSame(['body' => 'Nothing to release.'], json_decode((string) $this->requests[0]->getBody(), true));
+        $this->assertSame(['state' => 'closed'], json_decode((string) $this->requests[1]->getBody(), true));
+    }
+
+    public function test_close_pull_request_from_a_fork_leaves_its_branch(): void
+    {
+        $this->respond(self::API . '/issues/7/comments', ['id' => 1], 201);
+        $this->respond(self::API . '/pulls/7', ['head' => ['ref' => 'main', 'repo' => ['full_name' => 'fork/r']]]);
+
+        $this->github->closePullRequest('o/r', 7, 'Closed.');
+
+        $this->assertCount(2, $this->requests);
+    }
+
+    public function test_close_pull_request_fails_when_the_branch_is_not_deleted(): void
+    {
+        $this->respond(self::API . '/issues/7/comments', ['id' => 1], 201);
+        $this->respond(self::API . '/pulls/7', ['head' => ['ref' => 'b', 'repo' => ['full_name' => 'o/r']]]);
+        $this->respond(self::API . '/git/refs/heads/b', ['message' => 'Reference does not exist'], 422);
+
+        $this->expectException(GitHubException::class);
+        $this->expectExceptionMessage('DELETE ' . self::API . '/git/refs/heads/b: 422 Reference does not exist');
+
+        $this->github->closePullRequest('o/r', 7, 'Closed.');
+    }
+
+    public function test_permission_of_a_user(): void
+    {
+        $this->respond(self::API . '/collaborators/otelbot-php%5Bbot%5D/permission', ['permission' => 'write', 'role_name' => 'maintain']);
+
+        $this->assertSame('write', $this->github->permission('o/r', 'otelbot-php[bot]'));
+    }
+
+    public function test_parents_of_a_commit(): void
+    {
+        $this->respond(self::API . '/commits/abc', ['sha' => 'abc', 'parents' => [['sha' => 'p1'], ['sha' => 'p2']]]);
+
+        $this->assertSame(['p1', 'p2'], $this->github->parents('o/r', 'abc'));
+    }
+
     /**
      * @param array<string, string> $headers
      */
@@ -402,5 +542,13 @@ class GitHubTest extends TestCase
     private static function commit(string $sha): array
     {
         return ['sha' => $sha, 'commit' => ['message' => "Message {$sha}", 'tree' => ['sha' => "tree-{$sha}"]]];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function pull(int $number, string $author, ?string $body, string $head): array
+    {
+        return ['number' => $number, 'user' => ['login' => $author], 'body' => $body, 'head' => ['sha' => $head, 'ref' => 'otelbot/release']];
     }
 }

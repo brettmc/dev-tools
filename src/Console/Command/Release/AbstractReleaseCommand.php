@@ -13,6 +13,7 @@ use OpenTelemetry\DevTools\Console\Release\Repository;
 use OpenTelemetry\DevTools\Package\GitSplit\MonorepoCheckout;
 use OpenTelemetry\DevTools\Package\Release\ReleaseOrderReport;
 use OpenTelemetry\DevTools\Util\Path;
+use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -126,6 +127,20 @@ abstract class AbstractReleaseCommand extends BaseCommand
         $this->output->writeln("<error>{$message}</error>");
 
         return true;
+    }
+
+    /**
+     * Report an error, also as a GitHub Actions annotation when run there, so it shows on the run's
+     * summary.
+     */
+    protected function fail(string $message): int
+    {
+        $this->output->writeln('<error>' . OutputFormatter::escape($message) . '</error>');
+        if (getenv('GITHUB_ACTIONS') !== false) {
+            $this->output->writeln('::error::' . strtr($message, ['%' => '%25', "\r" => '%0D', "\n" => '%0A']), OutputInterface::OUTPUT_RAW);
+        }
+
+        return Command::FAILURE;
     }
 
     /**
