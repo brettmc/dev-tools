@@ -259,7 +259,9 @@ class GitRunner
      * branch must not exist.
      *
      * The token goes in an Authorization header set through the environment, so it is not in the
-     * URL or the arguments, where git and process listings show them.
+     * URL or the arguments, where git and process listings show them. It is set for $remote, as a
+     * header actions/checkout persisted for the URL would win over a generic one. The empty value
+     * first clears any such header, so only the token is sent.
      *
      * @throws RuntimeException with git's own error, when the push is refused
      */
@@ -268,9 +270,11 @@ class GitRunner
         $env = [];
         if ($token !== null) {
             $env = [
-                'GIT_CONFIG_COUNT' => '1',
-                'GIT_CONFIG_KEY_0' => 'http.extraheader',
-                'GIT_CONFIG_VALUE_0' => 'Authorization: Basic ' . base64_encode("x-access-token:{$token}"),
+                'GIT_CONFIG_COUNT' => '2',
+                'GIT_CONFIG_KEY_0' => "http.{$remote}.extraheader",
+                'GIT_CONFIG_VALUE_0' => '',
+                'GIT_CONFIG_KEY_1' => "http.{$remote}.extraheader",
+                'GIT_CONFIG_VALUE_1' => 'Authorization: Basic ' . base64_encode("x-access-token:{$token}"),
             ];
         }
 

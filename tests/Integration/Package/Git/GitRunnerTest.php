@@ -505,6 +505,27 @@ class GitRunnerTest extends TestCase
         }
     }
 
+    public function test_push_sends_only_the_token_over_a_header_the_checkout_persisted(): void
+    {
+        [, $work] = $this->remote();
+        //answers nothing, so git fails after sending its first request, which the server prints
+        $server = new Process([PHP_BINARY, '-r', '$s = stream_socket_server("tcp://127.0.0.1:0"); echo stream_socket_get_name($s, false), "\n"; $c = stream_socket_accept($s, 10); echo fread($c, 8192);']);
+        $server->start();
+        $server->waitUntil(static fn (string $type, string $output): bool => str_contains($output, "\n"));
+        $address = trim($server->getIncrementalOutput());
+        $this->git('-C', $work, 'config', "http.http://{$address}/.extraheader", 'AUTHORIZATION: basic checkout');
+
+        try {
+            (new GitRunner())->push($work, "http://{$address}/o/r.git", 'otelbot/release', '', 'secret');
+            $this->fail('no exception');
+        } catch (RuntimeException) {
+        }
+        $server->wait();
+
+        $headers = preg_grep('/^authorization:/i', explode("\r\n", $server->getIncrementalOutput()));
+        $this->assertSame(['Authorization: Basic ' . base64_encode('x-access-token:secret')], array_values($headers));
+    }
+
     /**
      * A bare repository with one commit on main, and a clone of it with a second commit on top.
      *

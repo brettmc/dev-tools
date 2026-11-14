@@ -448,6 +448,9 @@ class ReleasePrepCommandTest extends TestCase
 
         $this->assertSame(Command::SUCCESS, $this->prep(['--dry-run' => true, '--format' => 'json'], ['capture_stderr_separately' => true]));
 
+        $json = json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertStringStartsWith('| Package ', $json['markdown']);
+        unset($json['markdown']);
         $this->assertSame([
             'packages' => [
                 ['package' => 'open-telemetry/api', 'repository' => 'opentelemetry-php/api', 'latest' => '1.10.1', 'version' => '1.11.0', 'reason' => 'new features', 'warnings' => [], 'undecided' => false, 'changes' => ['Added' => ['A feature.']]],
@@ -458,8 +461,33 @@ class ReleasePrepCommandTest extends TestCase
             'constraint_warnings' => [],
             'release' => true,
             'completed' => true,
-        ], json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR));
+        ], $json);
         $this->assertStringContainsString('[DRY-RUN] no files were changed', $this->tester->getErrorOutput());
+    }
+
+    public function test_json_format_holds_the_report_in_markdown(): void
+    {
+        $this->monorepo(['src/API' => ['api', self::BREAKING . "\n[#7]: https://github.com/open-telemetry/opentelemetry-php/pull/7\n"]]);
+        file_put_contents($this->root->url() . '/src/API/CHANGELOG.md', str_replace('- Dropped X.', '- Dropped X ([#7]).', $this->changelog('src/API')));
+        $this->alias('src/API', 'open-telemetry/api', '1.10.x-dev');
+
+        $this->assertSame(Command::SUCCESS, $this->prep(['--format' => 'json'], ['interactive' => false, 'capture_stderr_separately' => true]));
+
+        $this->assertSame(<<<'MD'
+            | Package               | Latest | Suggested | Reason                    |
+            |-----------------------|--------|-----------|---------------------------|
+            | opentelemetry-php/api | 1.10.1 | 1.11.0    | breaking changes recorded |
+
+            **opentelemetry-php/api**
+            - Dropped X (#7).
+
+            Tag in this order: open-telemetry/api
+
+            Branch aliases:
+              open-telemetry/api: 1.10.x-dev -> 1.11.x-dev
+
+            MD, json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR)['markdown']);
+        $this->assertStringContainsString('| opentelemetry-php/api | 1.10.1 | 1.11.0    | breaking changes recorded |', $this->tester->getErrorOutput());
     }
 
     public function test_json_format_lists_changes_in_section_order_and_as_an_object_when_empty(): void
@@ -513,6 +541,7 @@ class ReleasePrepCommandTest extends TestCase
             'constraint_warnings' => [],
             'release' => false,
             'completed' => false,
+            'markdown' => '',
         ], json_decode($this->tester->getDisplay(), true, flags: JSON_THROW_ON_ERROR));
         $this->assertStringContainsString('--date must be YYYY-MM-DD', $this->tester->getErrorOutput());
     }

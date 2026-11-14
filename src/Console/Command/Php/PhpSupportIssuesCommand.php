@@ -48,7 +48,7 @@ class PhpSupportIssuesCommand extends AbstractPhpSupportCommand
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $this->registerInputAndOutput($input, $output);
-        $path = $this->projectPath($input, $output);
+        $path = $this->projectPath($input);
         if ($path === null) {
             return Command::FAILURE;
         }
@@ -87,7 +87,7 @@ class PhpSupportIssuesCommand extends AbstractPhpSupportCommand
                 $this->open($output, $issue, (string) $repository, $github);
             }
         } catch (InvalidArgumentException|RuntimeException $e) {
-            return $this->fail($output, $e->getMessage());
+            return $this->fail($e->getMessage());
         }
 
         return Command::SUCCESS;

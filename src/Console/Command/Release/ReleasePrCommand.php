@@ -6,7 +6,6 @@ namespace OpenTelemetry\DevTools\Console\Command\Release;
 
 use OpenTelemetry\DevTools\Console\Release\CapturedOutput;
 use OpenTelemetry\DevTools\Console\Release\GitHub;
-use OpenTelemetry\DevTools\Console\Release\GitHubException;
 use OpenTelemetry\DevTools\Console\Release\Overrides;
 use OpenTelemetry\DevTools\Console\Release\ReleaseDescription;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
@@ -15,7 +14,6 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
-use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
@@ -71,7 +69,7 @@ class ReleasePrCommand extends AbstractReleaseCommand
 
         try {
             return $this->open($input);
-        } catch (GitHubException|RuntimeException|\JsonException $e) {
+        } catch (RuntimeException|\JsonException $e) {
             return $this->fail($e->getMessage());
         }
     }
@@ -138,23 +136,13 @@ class ReleasePrCommand extends AbstractReleaseCommand
             return $this->fail('Each override must be <package>=<version|skip>. Not valid: ' . implode(', ', $invalid));
         }
 
-        $arguments = ['--path' => $path, '--token' => $token, '--date' => $date, '--set' => $overrides->lines];
-        //without --dry-run the markdown ends with instructions for a person at a terminal
-        $buffer = new BufferedOutput();
-        $status = $this->prep($arguments + ['--dry-run' => true, '--format' => 'markdown'], $buffer);
-        $markdown = $buffer->fetch();
-        if ($status !== Command::SUCCESS) {
-            $this->output->write($markdown);
-
-            return $this->fail('release:prep --dry-run failed');
-        }
         $json = new CapturedOutput($this->output);
-        if ($this->prep($arguments + ['--format' => 'json'], $json) !== Command::SUCCESS) {
+        if ($this->prep(['--path' => $path, '--token' => $token, '--date' => $date, '--set' => $overrides->lines, '--format' => 'json'], $json) !== Command::SUCCESS) {
             return $this->fail('release:prep failed');
         }
         $prep = json_decode($json->fetch(), true, 512, JSON_THROW_ON_ERROR);
-        if (!is_array($prep)) {
-            return $this->fail('release:prep wrote no JSON object');
+        if (!is_array($prep) || !is_string($prep['markdown'] ?? null)) {
+            return $this->fail('release:prep wrote no JSON object with the markdown report');
         }
         $sha = $this->git->head($path);
 
@@ -178,9 +166,14 @@ class ReleasePrCommand extends AbstractReleaseCommand
             || !$this->git->sameTree($path, $lease, $commit);
 
         $description = (new ReleaseDescription($repository, $sha, $repository === self::AVAILABLE_REPOS['core']))
-            ->render($markdown, $prep, $previous, $overrides);
+            ->render($prep['markdown'], $prep, $previous, $overrides);
+        //the stale job may have run for a push to main during this build, and seen the old build
+        if ($this->branch_tip($repository) !== $sha) {
+            $description = ReleaseDescription::markStale($description);
+        }
 
         //the description is updated before the push, so the approval check on the new commit reads it
+        $replaced = null;
         if ($pull !== null) {
             $current = $this->github->pullRequest($repository, $pull['number']);
             //an edit since this run read the description has started a run of its own. The stale
@@ -191,10 +184,21 @@ class ReleasePrCommand extends AbstractReleaseCommand
             if ($current['title'] !== $title || self::text($current['body']) !== self::text($description)) {
                 $this->github->editPullRequest($repository, $pull['number'], $title, $description);
                 $this->output->writeln("Updated the description of #{$pull['number']}");
+                $replaced = $current;
             }
         }
         if ($push) {
-            $this->git->push($path, $remote, self::BRANCH, $lease ?? '', $token);
+            try {
+                $this->git->push($path, $remote, self::BRANCH, $lease ?? '', $token);
+            } catch (RuntimeException $e) {
+                //the branch is unchanged, so its description must be too
+                if ($pull !== null && $replaced !== null) {
+                    $this->github->editPullRequest($repository, $pull['number'], $replaced['title'], $replaced['body']);
+                    $this->output->writeln("Put back the description of #{$pull['number']}");
+                }
+
+                throw $e;
+            }
             $this->output->writeln('Pushed ' . self::BRANCH . " at {$commit}");
         } else {
             $this->output->writeln(self::BRANCH . " already holds this release of {$sha}");

@@ -59,7 +59,20 @@ class ReleasePrStaleCommand extends AbstractReleaseCommand
             } elseif (ReleaseDescription::isStale($pull['body'])) {
                 $output->writeln("#{$pull['number']} is already marked stale");
             } else {
-                $this->github->editPullRequest($repository, $pull['number'], null, ReleaseDescription::markStale($pull['body']));
+                //a rebuild since the listing replaced the description, and judged the staleness itself
+                //GitHub has no conditional edit, so an edit between this read and the PATCH is lost
+                $current = $this->github->pullRequest($repository, $pull['number'])['body'];
+                if (ReleaseDescription::unmarked($current) !== ReleaseDescription::unmarked($pull['body'])) {
+                    $output->writeln("#{$pull['number']} changed while this ran, and is left to the run that changed it");
+
+                    return Command::SUCCESS;
+                }
+                if (ReleaseDescription::isStale($current)) {
+                    $output->writeln("#{$pull['number']} is already marked stale");
+
+                    return Command::SUCCESS;
+                }
+                $this->github->editPullRequest($repository, $pull['number'], null, ReleaseDescription::markStale($current));
                 $output->writeln("Marked #{$pull['number']} stale");
             }
         } catch (GitHubException $e) {

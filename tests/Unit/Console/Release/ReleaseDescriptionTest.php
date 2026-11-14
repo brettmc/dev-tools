@@ -14,8 +14,8 @@ use PHPUnit\Framework\TestCase;
 class ReleaseDescriptionTest extends TestCase
 {
     private const SHA = '841cc9a1b2c3d4e5f60718293a4b5c6d7e8f9012';
-    private const MARKDOWN = "| Package | Latest | Suggested | Reason |\n|---|---|---|---|\n| opentelemetry-php/sdk | 1.15.0 | 2.0.0 | set by --set |\n\nTag in this order: open-telemetry/sdk\n[DRY-RUN] no files were changed\n";
-    /** what the bash in core's release-pr.yml wrote for warnings() */
+    private const MARKDOWN = "| Package | Latest | Suggested | Reason |\n|---|---|---|---|\n| opentelemetry-php/sdk | 1.15.0 | 2.0.0 | set by --set |\n\nTag in this order: open-telemetry/sdk\n";
+    /** `jq -c | sha256sum` of the checks for warnings(), cut to 16 digits */
     private const HASH = '646ae93db4df7370';
 
     public function test_description_without_breaking_changes(): void
@@ -75,7 +75,7 @@ class ReleaseDescriptionTest extends TestCase
             MD, $body);
     }
 
-    public function test_the_hash_is_the_one_the_workflow_wrote_before(): void
+    public function test_the_hash_is_the_one_jq_and_sha256sum_give(): void
     {
         $this->assertStringContainsString('<!-- breaking: ' . self::HASH . ' -->', $this->render(self::prep(self::warnings())));
     }
@@ -118,6 +118,29 @@ class ReleaseDescriptionTest extends TestCase
         $previous = ReleaseDescription::APPROVAL . "\n<!-- breaking: " . self::HASH . " -->\n";
 
         $this->assertStringContainsString(ReleaseDescription::APPROVAL . "\n", $this->render(self::prep(self::warnings()), $previous));
+    }
+
+    /**
+     * @dataProvider ticks
+     */
+    public function test_a_tick_typed_by_hand_stays(string $tick): void
+    {
+        $previous = "{$tick}\n<!-- breaking: " . self::HASH . " -->\n";
+
+        $this->assertStringContainsString(ReleaseDescription::APPROVED . "\n", $this->render(self::prep(self::warnings()), $previous));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function ticks(): array
+    {
+        return [
+            'capital X' => ['- [X] I have read the breaking changes'],
+            'star bullet' => ['* [x] I have read the breaking changes'],
+            'trailing space' => ['- [x] I have read the breaking changes '],
+            'more spaces' => ['-  [x]  I have read the breaking changes'],
+        ];
     }
 
     public function test_the_tick_must_be_a_whole_line(): void

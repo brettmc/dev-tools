@@ -17,7 +17,8 @@ final class ReleaseDescription
     public const APPROVAL = '- [ ] I have read the breaking changes';
     public const APPROVED = '- [x] I have read the breaking changes';
     public const STALE = '`main` has moved since this pull request was built, so it would release less than `main` holds. Rebuild it to bring the changes in. <!-- stale -->';
-    private const DRY_RUN = '[DRY-RUN] no files were changed';
+    /** A ticked box, typed by hand or clicked: GitHub renders each of these as ticked */
+    private const TICKED = '/^ *[-*+] +\[[xX]\] +I have read the breaking changes *$/';
 
     private const INTRO = <<<'MD'
         To bring in later changes to `main`, rebuild this pull request: tick Open a release PR on the
@@ -63,7 +64,7 @@ final class ReleaseDescription
     }
 
     /**
-     * @param string $markdown the output of `release:prep --dry-run --format=markdown`
+     * @param string $markdown the report of `release:prep`, as `markdown` in its JSON
      * @param array<mixed> $prep the decoded output of `release:prep --format=json`
      * @param string $previous the description being replaced, empty for a new pull request
      */
@@ -76,17 +77,14 @@ final class ReleaseDescription
             $this->sha,
         );
         $body .= self::INTRO;
-        $body .= implode('', array_filter(
-            preg_split('/(?<=\n)/', $markdown) ?: [],
-            static fn (string $line): bool => rtrim($line, "\n") !== self::DRY_RUN,
-        ));
+        $body .= $markdown;
 
         $checks = self::checks($prep);
         if ($checks['warnings'] !== [] || $checks['constraints'] !== []) {
             $hash = self::hash($checks);
             $marker = "<!-- breaking: {$hash} -->";
             $lines = self::lines($previous);
-            $box = in_array(self::APPROVED, $lines, true) && in_array($marker, $lines, true) ? self::APPROVED : self::APPROVAL;
+            $box = preg_grep(self::TICKED, $lines) !== [] && in_array($marker, $lines, true) ? self::APPROVED : self::APPROVAL;
             $body .= self::BREAKING . "{$box}\n{$marker}\n";
         }
 
@@ -142,8 +140,8 @@ final class ReleaseDescription
     }
 
     /**
-     * The hash the workflow's bash took, `jq -c` and then `sha256sum`, so that a tick given before
-     * the switch to this command survives it.
+     * The first 16 hex digits of the sha256 of the compact JSON and a newline, as `jq -c | sha256sum`
+     * gives. Open pull requests carry markers made that way, and a changed hash drops their tick.
      *
      * @param array<mixed> $checks
      */

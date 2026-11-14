@@ -40,7 +40,7 @@ class ReleasePrCommandTest extends TestCase
     private const LEASE = 'bead000000000000000000000000000000000000';
     /** the commit message for prep(), in tag order */
     private const DATE_MESSAGE = "Release 2026-11-14\n\nopen-telemetry/sdk 2.0.0\nopen-telemetry/api 1.11.0\n";
-    private const MARKDOWN = "| Package | Latest | Suggested | Reason |\n|---|---|---|---|\n| opentelemetry-php/api | 1.10.1 | 1.11.0 | Added |\n\nTag in this order: open-telemetry/api\n[DRY-RUN] no files were changed\n";
+    private const MARKDOWN = "| Package | Latest | Suggested | Reason |\n|---|---|---|---|\n| opentelemetry-php/api | 1.10.1 | 1.11.0 | Added |\n\nTag in this order: open-telemetry/api\n";
 
     /** @var list<array{number: int, body: string, user?: string}> the open pull requests */
     private array $pulls = [];
@@ -48,6 +48,8 @@ class ReleasePrCommandTest extends TestCase
     private ?string $current = null;
     private string $currentTitle = 'Release ' . self::DATE;
     private string $permission = 'write';
+    /** sha of main on GitHub once the release is built */
+    private string $main = self::SHA;
     /** @var array<string, Response> by `METHOD url`, ahead of the defaults */
     private array $responses = [];
     /** @var list<RequestInterface> */
@@ -56,8 +58,8 @@ class ReleasePrCommandTest extends TestCase
     private array $events = [];
     /** @var list<InputInterface> inputs of each release:prep run */
     private array $prepInputs = [];
-    /** @var array<string, int> exit status of release:prep, by format */
-    private array $prepStatus = ['markdown' => Command::SUCCESS, 'json' => Command::SUCCESS];
+    /** exit status of release:prep */
+    private int $prepStatus = Command::SUCCESS;
     /** @var array<string, mixed> the JSON of release:prep, decoded */
     private array $prep;
     /** @var list<array{0: string, 1: string, 2: string}> message, name and email of each commit */
@@ -104,25 +106,21 @@ class ReleasePrCommandTest extends TestCase
         $this->assertStringContainsString('https://github.com/' . self::REPO . '/pull/7', $this->tester->getDisplay());
     }
 
-    public function test_prep_runs_twice_without_interaction_with_the_date_and_each_override(): void
+    public function test_prep_runs_once_without_interaction_with_the_date_and_each_override(): void
     {
         $this->pulls = [['number' => 7, 'body' => self::body(['api=1.11.0', 'sdk=2.0.0'])]];
 
         $this->assertSame(Command::SUCCESS, $this->run_command());
 
-        $this->assertCount(2, $this->prepInputs);
-        [$markdown, $json] = $this->prepInputs;
-        foreach ($this->prepInputs as $input) {
-            $this->assertFalse($input->isInteractive());
-            $this->assertSame($this->root->url(), $input->getOption('path'));
-            $this->assertSame(self::DATE, $input->getOption('date'));
-            $this->assertSame(['api=1.11.0', 'sdk=2.0.0'], $input->getOption('set'));
-            $this->assertSame('app-token', $input->getOption('token'));
-        }
-        $this->assertTrue($markdown->getOption('dry-run'));
-        $this->assertSame('markdown', $markdown->getOption('format'));
-        $this->assertFalse($json->getOption('dry-run'));
-        $this->assertSame('json', $json->getOption('format'));
+        $this->assertCount(1, $this->prepInputs);
+        [$input] = $this->prepInputs;
+        $this->assertFalse($input->isInteractive());
+        $this->assertSame($this->root->url(), $input->getOption('path'));
+        $this->assertSame(self::DATE, $input->getOption('date'));
+        $this->assertSame(['api=1.11.0', 'sdk=2.0.0'], $input->getOption('set'));
+        $this->assertSame('app-token', $input->getOption('token'));
+        $this->assertFalse($input->getOption('dry-run'));
+        $this->assertSame('json', $input->getOption('format'));
     }
 
     public function test_the_progress_of_the_json_prep_is_shown_and_kept_out_of_the_json(): void
@@ -182,7 +180,7 @@ class ReleasePrCommandTest extends TestCase
 
         $this->assertSame(Command::SUCCESS, $this->run_command($this->rebuild(self::body(['api=1.11.0']))));
 
-        $this->assertCount(2, $this->prepInputs);
+        $this->assertCount(1, $this->prepInputs);
     }
 
     public function test_rebuild_only_needs_the_previous_body(): void
@@ -275,20 +273,19 @@ class ReleasePrCommandTest extends TestCase
         $this->assertStringContainsString('Nothing to release from main at ' . self::SHA, $this->tester->getDisplay());
     }
 
-    public function test_a_failed_dry_run_fails_showing_its_output(): void
+    public function test_a_prep_without_the_markdown_report_fails(): void
     {
-        $this->prepStatus['markdown'] = Command::FAILURE;
+        unset($this->prep['markdown']);
 
         $this->assertSame(Command::FAILURE, $this->run_command());
 
-        $this->assertStringContainsString('markdown prep failed', $this->tester->getDisplay());
-        $this->assertCount(1, $this->prepInputs);
+        $this->assertStringContainsString('release:prep wrote no JSON object with the markdown report', $this->tester->getDisplay());
         $this->assertSame([], $this->commits);
     }
 
     public function test_a_failed_prep_fails(): void
     {
-        $this->prepStatus['json'] = Command::FAILURE;
+        $this->prepStatus = Command::FAILURE;
 
         $this->assertSame(Command::FAILURE, $this->run_command());
 
@@ -371,6 +368,18 @@ class ReleasePrCommandTest extends TestCase
         $this->assertSame(['PATCH ' . self::API . '/pulls/7', 'push'], $this->events);
     }
 
+    public function test_a_build_behind_main_is_marked_stale(): void
+    {
+        $this->pulls = [['number' => 7, 'body' => self::body([])]];
+        $this->current = ReleaseDescription::markStale(self::body([]));
+        $this->main = 'newer';
+
+        $this->assertSame(Command::SUCCESS, $this->run_command());
+
+        $this->assertSame(['PATCH ' . self::API . '/pulls/7', 'push'], $this->events);
+        $this->assertSame(ReleaseDescription::markStale($this->description(self::body([]))), $this->sent('PATCH', self::API . '/pulls/7')['body'] ?? null);
+    }
+
     public function test_contrib_is_rebuilt_by_hand(): void
     {
         $this->assertSame(Command::SUCCESS, $this->run_command(['--repository' => 'open-telemetry/opentelemetry-php-contrib']));
@@ -420,6 +429,20 @@ class ReleasePrCommandTest extends TestCase
         $this->assertNull($this->sent('POST', self::API . '/pulls'));
     }
 
+    public function test_a_failed_push_puts_back_the_description(): void
+    {
+        $this->pulls = [['number' => 7, 'body' => self::body(['api=1.11.0'])]];
+        $this->current = ReleaseDescription::markStale(self::body(['api=1.11.0']));
+        $this->currentTitle = 'Release 2026-11-01';
+        $this->remote = 'moved';
+
+        $this->assertSame(Command::FAILURE, $this->run_command());
+
+        $this->assertSame(['PATCH ' . self::API . '/pulls/7', 'PATCH ' . self::API . '/pulls/7'], $this->events);
+        $this->assertSame(['title' => 'Release 2026-11-01', 'body' => $this->current], $this->sent('PATCH', self::API . '/pulls/7'));
+        $this->assertStringContainsString('stale info', $this->tester->getDisplay());
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -438,7 +461,7 @@ class ReleasePrCommandTest extends TestCase
      */
     private function description(string $previous = '', array $overrides = []): string
     {
-        return (new ReleaseDescription(self::REPO, self::SHA, true))->render(self::MARKDOWN, $this->prep, $previous, new Overrides($overrides));
+        return (new ReleaseDescription(self::REPO, self::SHA, true))->render($this->prep['markdown'], $this->prep, $previous, new Overrides($overrides));
     }
 
     /**
@@ -464,6 +487,7 @@ class ReleasePrCommandTest extends TestCase
             'constraint_warnings' => [],
             'release' => true,
             'completed' => true,
+            'markdown' => self::MARKDOWN,
         ];
     }
 
@@ -506,7 +530,8 @@ class ReleasePrCommandTest extends TestCase
                 'title' => $this->currentTitle,
                 'body' => $this->current ?? $this->pulls[0]['body'],
             ])),
-            $method === 'GET' && str_contains($url, '/collaborators/') => new Response(200, [], json_encode(['permission' => $this->permission])),
+            $method === 'GET' && str_ends_with($url, '/git/ref/heads/main') => new Response(200, [], json_encode(['ref' => 'refs/heads/main', 'object' => ['sha' => $this->main]])),
+            $method === 'GET' && str_contains($url, '/collaborators/') =>new Response(200, [], json_encode(['permission' => $this->permission])),
             $method === 'PATCH' => new Response(200, [], json_encode(['head' => ['ref' => 'otelbot/release', 'repo' => ['full_name' => $this->repository]]])),
             $method === 'POST' && str_ends_with($url, '/comments') => new Response(201, [], '{}'),
             $method === 'POST' && str_ends_with($url, '/pulls') => new Response(201, [], json_encode(['html_url' => "https://github.com/{$this->repository}/pull/7"])),
@@ -516,7 +541,7 @@ class ReleasePrCommandTest extends TestCase
     }
 
     /**
-     * A release:prep that answers with $this->prep, in the format asked for.
+     * A release:prep that answers with $this->prep as JSON.
      */
     private function fakePrep(): Command
     {
@@ -529,17 +554,11 @@ class ReleasePrCommandTest extends TestCase
             ->addOption('format', null, InputOption::VALUE_REQUIRED)
             ->setCode(function (InputInterface $input, OutputInterface $output): int {
                 $this->prepInputs[] = $input;
-                $format = $input->getOption('format');
-                if ($format === 'markdown') {
-                    $output->write($this->prepStatus['markdown'] === Command::SUCCESS ? self::MARKDOWN : "<error>markdown prep failed</error>\n");
-
-                    return $this->prepStatus['markdown'];
-                }
                 $errors = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
                 $errors->writeln('prep progress');
-                $output->writeln(json_encode($this->prep + ['completed' => $this->prepStatus['json'] === Command::SUCCESS], JSON_PRETTY_PRINT), OutputInterface::OUTPUT_RAW);
+                $output->writeln(json_encode(['completed' => $this->prepStatus === Command::SUCCESS] + $this->prep, JSON_PRETTY_PRINT), OutputInterface::OUTPUT_RAW);
 
-                return $this->prepStatus['json'];
+                return $this->prepStatus;
             });
     }
 

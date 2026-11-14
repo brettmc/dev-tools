@@ -27,6 +27,8 @@ class ReleasePrStaleCommandTest extends TestCase
 
     /** @var list<array{number: int, body: string, user?: string}> */
     private array $pulls = [['number' => 7, 'body' => "Releases x.\r\n\r\nMore.\r\n"]];
+    /** the body of the pull request when it is read again, null for the same as listed */
+    private ?string $current = null;
     /** @var list<string> */
     private array $parents = ['older'];
     /** @var list<RequestInterface> */
@@ -80,6 +82,26 @@ class ReleasePrStaleCommandTest extends TestCase
     public function test_a_pull_request_already_marked_is_left_alone(): void
     {
         $this->pulls[0]['body'] = ReleaseDescription::markStale('Releases x.');
+
+        $this->assertSame(Command::SUCCESS, $this->run_command());
+
+        $this->assertStringContainsString('#7 is already marked stale', $this->tester->getDisplay());
+        $this->assertNull($this->sent('PATCH', self::API . '/pulls/7'));
+    }
+
+    public function test_a_description_changed_since_it_was_listed_is_left_alone(): void
+    {
+        $this->current = 'Rebuilt.';
+
+        $this->assertSame(Command::SUCCESS, $this->run_command());
+
+        $this->assertStringContainsString('#7 changed while this ran, and is left to the run that changed it', $this->tester->getDisplay());
+        $this->assertNull($this->sent('PATCH', self::API . '/pulls/7'));
+    }
+
+    public function test_a_description_marked_since_it_was_listed_is_left_alone(): void
+    {
+        $this->current = ReleaseDescription::markStale($this->pulls[0]['body']);
 
         $this->assertSame(Command::SUCCESS, $this->run_command());
 
@@ -177,6 +199,7 @@ class ReleasePrStaleCommandTest extends TestCase
                 'user' => ['login' => $pull['user'] ?? 'otelbot-php[bot]'],
                 'head' => ['sha' => self::HEAD],
             ], $this->pulls))),
+            $request->getMethod() === 'GET' && str_ends_with($url, '/pulls/7') => new Response(200, [], json_encode(['title' => 'Release', 'body' => $this->current ?? $this->pulls[0]['body']])),
             str_ends_with($url, '/commits/' . self::HEAD) => new Response(200, [], json_encode(['parents' => array_map(static fn (string $sha): array => ['sha' => $sha], $this->parents)])),
             str_ends_with($url, '/git/ref/heads/main') => new Response(200, [], json_encode(['ref' => 'refs/heads/main', 'object' => ['sha' => self::MAIN]])),
             $request->getMethod() === 'PATCH' => new Response(200, [], '{}'),

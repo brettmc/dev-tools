@@ -37,7 +37,7 @@ final class Overrides
         $lines = [];
         $inside = false;
         foreach (explode("\n", str_replace("\r", '', $body)) as $line) {
-            //as in the workflow's awk, another opening fence is skipped rather than closing the block
+            //another opening fence is skipped rather than closing the block
             if (preg_match('/^' . self::FENCE . '[ \t]*$/', $line) === 1) {
                 $inside = true;
 

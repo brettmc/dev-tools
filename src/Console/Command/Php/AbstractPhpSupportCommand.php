@@ -16,11 +16,8 @@ use OpenTelemetry\DevTools\Package\Php\SupportReport;
 use OpenTelemetry\DevTools\Util\Path;
 use Psr\Http\Client\ClientInterface;
 use RuntimeException;
-use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
-use Symfony\Component\Console\Output\OutputInterface;
 
 /**
  * Compares the PHP versions of a project with the support policy: a PHP version is supported until
@@ -59,24 +56,14 @@ abstract class AbstractPhpSupportCommand extends BaseCommand
     }
 
     /**
-     * Prints an error. The message is escaped, as it holds text of the project, which may look like a style tag.
-     */
-    protected function fail(OutputInterface $output, string $message): int
-    {
-        $output->writeln('<error>' . OutputFormatter::escape($message) . '</error>');
-
-        return Command::FAILURE;
-    }
-
-    /**
      * The checkout --path names, or null, having said why not.
      */
-    protected function projectPath(InputInterface $input, OutputInterface $output): ?string
+    protected function projectPath(InputInterface $input): ?string
     {
         try {
             return $this->checkoutPath($input->getOption('path'));
         } catch (RuntimeException $e) {
-            $this->fail($output, $e->getMessage());
+            $this->fail($e->getMessage());
 
             return null;
         }

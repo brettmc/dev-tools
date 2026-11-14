@@ -386,7 +386,8 @@ errors go to stderr. The object is printed however the prep ends.
     "order": ["open-telemetry/api", "open-telemetry/sdk"],
     "constraint_warnings": [],
     "release": true,
-    "completed": true
+    "completed": true,
+    "markdown": "| Package | Latest | Suggested | Reason |\n..."
 }
 ```
 
@@ -399,6 +400,8 @@ errors go to stderr. The object is printed however the prep ends.
 - `release` is true when anything is to be released.
 - `completed` is false, and the exit status non-zero, when the prep failed. The reason is on stderr.
   `packages` and `order` are empty if it failed before the packages were assessed.
+- `markdown` is the report `--format=markdown` prints: the table, warnings, tag order and changes.
+  It is empty when the prep failed.
 
 ```shell
 vendor/bin/otel release:prep -n --dry-run --format=json | jq '[.packages[].warnings[]] | length'
@@ -459,9 +462,8 @@ an error.
 ### What release:pr does
 
 1. Reads the overrides from the open pull request's description, if there is one.
-2. Runs `release:prep` twice, without interaction, with `--date` and one `--set` per override. A
-   `--dry-run --format=markdown` run gives the table for the description. A `--format=json` run
-   prepares the changelogs.
+2. Runs `release:prep` once, without interaction, with `--format=json`, `--date` and one `--set`
+   per override. It prepares the changelogs, and its `markdown` report goes in the description.
 3. Closes the pull request and deletes its branch when there is nothing to release.
 4. Commits the changes as `otelbot-php[bot]`, as `Release <date>` with one line per package in tag
    order.
@@ -479,7 +481,11 @@ vendor/bin/otel release:pr --repository=open-telemetry/opentelemetry-php
 
 The description is updated before the push. A check that runs on the new commit then reads the new
 description. If the description was edited while the command ran, it fails without pushing. The
-edit starts a run of its own.
+edit starts a run of its own. If the push fails, the old description is put back, as the branch is
+unchanged.
+
+If main moved while the command ran, the new description starts with the stale note, as
+[release:pr:stale](#mark-the-pull-request-stale) may have run for that push and seen the old build.
 
 ### Change a version with the overrides block
 
@@ -521,7 +527,8 @@ Core's `release-approval.yml` fails while the description holds the unticked lin
 That line is a contract: change it here and there together.
 
 The marker is a hash of the warnings. A rebuild keeps the tick while the hash is the same, and
-clears it when the warnings change.
+clears it when the warnings change. A tick typed by hand counts too, such as `* [X]` or extra
+spaces, as GitHub renders those as ticked.
 
 ### Mark the pull request stale
 
@@ -536,6 +543,9 @@ vendor/bin/otel release:pr:stale --repository=open-telemetry/opentelemetry-php
 The note is an edit to the description, so it starts any workflow that runs on edits. In core, that
 reruns the approval check. `release:pr` does not count the note as an edit made during its run.
 
+Just before it writes the note, the command reads the description again. If it changed since the
+pull request was listed, such as by a rebuild, it is left alone.
+
 ### Tokens and permissions
 
 Both commands take the token in `GITHUB_TOKEN` or `--token`. It authors the pull request, the
@@ -549,7 +559,7 @@ workflows. Edits made with a workflow's own `GITHUB_TOKEN` start none.
 
 The same token goes to `release:prep`, which reads the latest release of each split repository. Those
 reads are public. The push sends the token in a header, never in the URL, so it does not appear in
-git's errors.
+git's errors. It replaces any header `actions/checkout` left in the checkout's git config.
 
 ## Tag a release
 
