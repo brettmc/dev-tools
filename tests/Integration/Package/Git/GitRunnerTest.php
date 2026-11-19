@@ -283,6 +283,7 @@ class GitRunnerTest extends TestCase
         yield 'tree' => [static fn (GitRunner $git, string $dir, string $sha) => $git->tree($dir, $sha, 'src/API')];
         yield 'isAncestor' => [static fn (GitRunner $git, string $dir, string $sha) => $git->isAncestor($dir, $sha, 'HEAD')];
         yield 'fileAt' => [static fn (GitRunner $git, string $dir, string $sha) => $git->fileAt($dir, $sha, 'src/API/a.php')];
+        yield 'message' => [static fn (GitRunner $git, string $dir, string $sha) => $git->message($dir, $sha)];
     }
 
     public function test_has_commit_takes_a_revision_not_an_option(): void
@@ -423,6 +424,17 @@ class GitRunnerTest extends TestCase
         $git = new GitRunner();
         $this->assertSame($sha, $git->fetch($shallow, 'file://' . $remote, 'otelbot/release'));
         $this->assertSame(trim($this->git('-C', $remote, 'rev-parse', 'main')), $git->parent($shallow, $sha));
+    }
+
+    public function test_message_of_a_fetched_commit(): void
+    {
+        [$remote, $work] = $this->remote();
+        $sha = $this->pushBranch($remote, 'otelbot/release', "Release\n\nBuilt-On: abc");
+
+        $git = new GitRunner();
+        $git->fetch($work, 'file://' . $remote, 'otelbot/release');
+
+        $this->assertSame("Release\n\nBuilt-On: abc", $git->message($work, $sha));
     }
 
     public function test_parent_of_a_root_commit_is_null(): void

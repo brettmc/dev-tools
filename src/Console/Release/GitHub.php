@@ -308,6 +308,24 @@ class GitHub
     }
 
     /**
+     * @return array{message: string, parents: list<string>} the message of $sha and the shas of its
+     *         parents
+     */
+    public function commitSummary(string $repository, string $sha): array
+    {
+        $url = self::API . "{$repository}/commits/{$sha}";
+        $data = $this->expect('GET', $url, 200);
+
+        return [
+            'message' => self::string(self::object($data, 'commit', $url), 'message', $url),
+            'parents' => array_map(
+                static fn (mixed $parent): string => self::string($parent, 'sha', $url),
+                self::list(self::object($data, 'parents', $url), $url),
+            ),
+        ];
+    }
+
+    /**
      * Create the label, unless it exists. A 422 is only fine when it says so: it is also what a
      * label that GitHub rejects gets.
      */

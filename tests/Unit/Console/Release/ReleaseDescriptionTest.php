@@ -150,6 +150,27 @@ class ReleaseDescriptionTest extends TestCase
         $this->assertStringContainsString(ReleaseDescription::APPROVAL . "\n", $this->render(self::prep(self::warnings()), $previous));
     }
 
+    public function test_breaking_hash_is_the_one_in_the_marker(): void
+    {
+        $this->assertSame(self::HASH, ReleaseDescription::breakingHash(self::prep(self::warnings())));
+    }
+
+    public function test_no_warnings_have_no_breaking_hash(): void
+    {
+        $this->assertNull(ReleaseDescription::breakingHash(self::prep()));
+    }
+
+    public function test_approved_needs_the_tick_and_the_marker_for_the_hash(): void
+    {
+        $marker = '<!-- breaking: ' . self::HASH . ' -->';
+
+        $this->assertTrue(ReleaseDescription::approved("Text\r\n* [X] I have read the breaking changes\r\n{$marker}\r\n", self::HASH));
+        $this->assertFalse(ReleaseDescription::approved(ReleaseDescription::APPROVAL . "\n{$marker}\n", self::HASH), 'unticked');
+        $this->assertFalse(ReleaseDescription::approved(ReleaseDescription::APPROVED . "\n", self::HASH), 'marker deleted');
+        $this->assertFalse(ReleaseDescription::approved("{$marker}\n", self::HASH), 'box deleted');
+        $this->assertFalse(ReleaseDescription::approved(ReleaseDescription::APPROVED . "\n<!-- breaking: 0000000000000000 -->\n", self::HASH), 'another hash');
+    }
+
     public function test_contrib_is_rebuilt_by_hand(): void
     {
         $body = (new ReleaseDescription('open-telemetry/opentelemetry-php-contrib', self::SHA, false))

@@ -231,6 +231,17 @@ class GitRunner
     }
 
     /**
+     * The message of $sha, without the trailing newlines git adds, as log() gives it.
+     *
+     * @throws RuntimeException with git's own error, when $path is not a readable checkout or $sha
+     *         is not in it
+     */
+    public function message(string $path, string $sha): string
+    {
+        return rtrim($this->run($path, ['log', '-1', '--format=%B', '--end-of-options', $sha, '--']), "\n");
+    }
+
+    /**
      * @throws RuntimeException with git's own error, when $path is not a readable checkout
      * @return string|null the first parent of $sha, or null for a root commit
      */
