@@ -198,7 +198,7 @@ class ReleasePrCommandTest extends TestCase
 
         $this->assertSame(Command::SUCCESS, $this->run_command(['--rebuild-only' => true]));
 
-        $this->assertStringContainsString('The overrides are unchanged', $this->tester->getDisplay());
+        $this->assertStringContainsString('The overrides are unchanged, and main has not moved', $this->tester->getDisplay());
         $this->assertSame([], $this->prepInputs);
         $this->assertSame([], $this->fetches);
     }
@@ -211,6 +211,20 @@ class ReleasePrCommandTest extends TestCase
         $this->pulls = [['number' => 7, 'body' => self::body(['api=1.11.0'])]];
         $this->built(['api=1.11.0']);
         $this->remoteParent = 'rebased';
+
+        $this->assertSame(Command::SUCCESS, $this->run_command(['--rebuild-only' => true]));
+
+        $this->assertCount(1, $this->prepInputs);
+    }
+
+    /**
+     * A dashboard request queued behind this edit may have been dropped for it, and asked for main.
+     */
+    public function test_rebuild_only_behind_main_rebuilds(): void
+    {
+        $this->pulls = [['number' => 7, 'body' => self::body(['api=1.11.0'])]];
+        $this->built(['api=1.11.0']);
+        $this->main = 'newer';
 
         $this->assertSame(Command::SUCCESS, $this->run_command(['--rebuild-only' => true]));
 

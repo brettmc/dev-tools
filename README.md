@@ -528,9 +528,11 @@ it is passed as an argument, never through a shell. An invalid line fails the ru
 
 A workflow that runs on edits to the description passes `--rebuild-only`. The command then does
 nothing unless the pull request is open and its head commit was not built with the overrides in its
-description. It reads the description when it runs, not as the edit left it, so a run that was
-queued behind another edit still builds the latest overrides. A head without trailers, or whose
-parent is not the commit `Built-On` names, as after a rebase or a merge, is rebuilt. Pass `--sender`
+description, or not on the tip of main. It reads the description when it runs, not as the edit left
+it, so a run that was queued behind another edit still builds the latest overrides. Main is checked
+too because a run queued behind it, such as a tick on the dashboard, may have been dropped. A head
+without trailers, or whose parent is not the commit `Built-On` names, as after a rebase or a merge,
+is rebuilt. Pass `--sender`
 with the login of the user who made the edit or asked for the rebuild. They need write or admin
 access to the monorepo.
 

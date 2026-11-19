@@ -58,7 +58,7 @@ class ReleasePrCommand extends AbstractReleaseCommand
             ->addOption('repository', null, InputOption::VALUE_REQUIRED, 'the monorepo, ' . implode(' or ', self::AVAILABLE_REPOS))
             ->addOption('token', ['t'], InputOption::VALUE_REQUIRED, 'github token that can write the pull requests and contents of the monorepo (default: GITHUB_TOKEN)')
             ->addOption('date', null, InputOption::VALUE_REQUIRED, 'release date, YYYY-MM-DD (default: today in UTC)')
-            ->addOption('rebuild-only', null, InputOption::VALUE_NONE, 'rebuild the pull request if it is open and its description has overrides it was not built with, as after an edit')
+            ->addOption('rebuild-only', null, InputOption::VALUE_NONE, 'rebuild the pull request if it is open, and its description has overrides it was not built with or main has moved since it was built, as after an edit')
             ->addOption('sender', null, InputOption::VALUE_REQUIRED, 'the user who asked for the pull request, who needs write access to the monorepo')
         ;
     }
@@ -110,7 +110,7 @@ class ReleasePrCommand extends AbstractReleaseCommand
 
         $overrides = Overrides::fromBody($previous);
         if ($rebuildOnly && $this->builtWith($repository, $pull['head'], $overrides)) {
-            $this->output->writeln('The overrides are unchanged');
+            $this->output->writeln('The overrides are unchanged, and main has not moved');
 
             return Command::SUCCESS;
         }
@@ -205,15 +205,16 @@ class ReleasePrCommand extends AbstractReleaseCommand
     }
 
     /**
-     * Whether $sha was built by release:pr with $overrides, on the commit of main it names. A rebase
-     * or Update branch keeps the trailers but not the parent.
+     * Whether $sha was built by release:pr with $overrides, on the tip of main, which is the commit
+     * it names. A rebase or Update branch keeps the trailers but not the parent.
      */
     private function builtWith(string $repository, string $sha, Overrides $overrides): bool
     {
         $commit = $this->github->commitSummary($repository, $sha);
         $built = ReleaseBuild::fromMessage($commit['message']);
 
-        return $built !== null && $commit['parents'] === [$built->main] && $built->overrides->equals($overrides);
+        return $built !== null && $commit['parents'] === [$built->main] && $built->overrides->equals($overrides)
+            && $this->branch_tip($repository) === $built->main;
     }
 
     /**
