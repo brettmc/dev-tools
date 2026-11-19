@@ -7,6 +7,7 @@ namespace OpenTelemetry\DevTools\Console\Command\Release;
 use OpenTelemetry\DevTools\Console\Release\CapturedOutput;
 use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\Overrides;
+use OpenTelemetry\DevTools\Console\Release\ReleaseBuild;
 use OpenTelemetry\DevTools\Console\Release\ReleaseDescription;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use RuntimeException;
@@ -22,7 +23,8 @@ use Symfony\Component\Console\Output\OutputInterface;
  * description on top.
  *
  * The checkout is changed and committed. The pull request's branch is replaced, never merged, so
- * the pull request never conflicts with main.
+ * the pull request never conflicts with main. The commit records what it was built from, as
+ * {@see ReleaseBuild} trailers.
  */
 class ReleasePrCommand extends AbstractReleaseCommand
 {
@@ -56,8 +58,7 @@ class ReleasePrCommand extends AbstractReleaseCommand
             ->addOption('repository', null, InputOption::VALUE_REQUIRED, 'the monorepo, ' . implode(' or ', self::AVAILABLE_REPOS))
             ->addOption('token', ['t'], InputOption::VALUE_REQUIRED, 'github token that can write the pull requests and contents of the monorepo (default: GITHUB_TOKEN)')
             ->addOption('date', null, InputOption::VALUE_REQUIRED, 'release date, YYYY-MM-DD (default: today in UTC)')
-            ->addOption('rebuild-only', null, InputOption::VALUE_NONE, 'rebuild the pull request if it is open and its overrides changed, as after an edit to its description')
-            ->addOption('previous-body-file', null, InputOption::VALUE_REQUIRED, 'with --rebuild-only, a file holding the description before the edit')
+            ->addOption('rebuild-only', null, InputOption::VALUE_NONE, 'rebuild the pull request if it is open and its description has overrides it was not built with, as after an edit')
             ->addOption('sender', null, InputOption::VALUE_REQUIRED, 'the user who asked for the pull request, who needs write access to the monorepo')
         ;
     }
@@ -90,17 +91,6 @@ class ReleasePrCommand extends AbstractReleaseCommand
             return $this->fail("--date must be YYYY-MM-DD, got \"{$date}\"");
         }
         $rebuildOnly = (bool) $input->getOption('rebuild-only');
-        $before = null;
-        if ($rebuildOnly) {
-            $file = $input->getOption('previous-body-file');
-            if ($file === null) {
-                return $this->fail('--rebuild-only needs --previous-body-file, the description before the edit');
-            }
-            $before = @file_get_contents($file);
-            if ($before === false) {
-                return $this->fail("Cannot read {$file}");
-            }
-        }
         $path = $this->checkoutPath($input->getOption('path'));
         if ($path === null) {
             return Command::FAILURE;
@@ -119,7 +109,7 @@ class ReleasePrCommand extends AbstractReleaseCommand
         $previous = str_replace("\r", '', $pull['body'] ?? '');
 
         $overrides = Overrides::fromBody($previous);
-        if ($before !== null && $overrides->equals(Overrides::fromBody($before))) {
+        if ($rebuildOnly && $this->builtWith($repository, $pull['head'], $overrides)) {
             $this->output->writeln('The overrides are unchanged');
 
             return Command::SUCCESS;
@@ -156,14 +146,18 @@ class ReleasePrCommand extends AbstractReleaseCommand
             return Command::SUCCESS;
         }
 
-        $title = "Release {$date}";
-        $commit = $this->git->commitAll($path, self::message($title, $prep), self::BOT, self::BOT_EMAIL);
         $remote = "https://github.com/{$repository}.git";
-        //the lease makes the push fail if another run moved the branch after this fetch
+        //the lease makes the push fail if another run moved the branch after this fetch. The fetch
+        //makes the checkout shallow, so it comes after release:prep has read the history.
         $lease = $this->git->fetch($path, $remote, self::BRANCH);
+        $built = $lease === null ? null : ReleaseBuild::fromMessage($this->git->message($path, $lease));
+        $title = "Release {$date}";
+        $build = new ReleaseBuild($sha, ReleaseDescription::breakingHash($prep), $overrides);
+        $commit = $this->git->commitAll($path, self::message($title, $prep) . "\n" . $build->trailers(), self::BOT, self::BOT_EMAIL);
         $push = $lease === null
             || $this->git->parent($path, $lease) !== $sha
-            || !$this->git->sameTree($path, $lease, $commit);
+            || !$this->git->sameTree($path, $lease, $commit)
+            || $built?->trailers() !== $build->trailers();
 
         $description = (new ReleaseDescription($repository, $sha, $repository === self::AVAILABLE_REPOS['core']))
             ->render($prep['markdown'], $prep, $previous, $overrides);
@@ -208,6 +202,18 @@ class ReleasePrCommand extends AbstractReleaseCommand
         }
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Whether $sha was built by release:pr with $overrides, on the commit of main it names. A rebase
+     * or Update branch keeps the trailers but not the parent.
+     */
+    private function builtWith(string $repository, string $sha, Overrides $overrides): bool
+    {
+        $commit = $this->github->commitSummary($repository, $sha);
+        $built = ReleaseBuild::fromMessage($commit['message']);
+
+        return $built !== null && $commit['parents'] === [$built->main] && $built->overrides->equals($overrides);
     }
 
     /**

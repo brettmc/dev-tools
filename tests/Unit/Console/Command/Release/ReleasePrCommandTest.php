@@ -8,6 +8,7 @@ use Nyholm\Psr7\Response;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrCommand;
 use OpenTelemetry\DevTools\Console\Release\GitHub;
 use OpenTelemetry\DevTools\Console\Release\Overrides;
+use OpenTelemetry\DevTools\Console\Release\ReleaseBuild;
 use OpenTelemetry\DevTools\Console\Release\ReleaseDescription;
 use OpenTelemetry\DevTools\Package\Git\GitRunner;
 use OpenTelemetry\DevTools\Tests\Unit\Behavior\UsesVfsTrait;
@@ -38,8 +39,10 @@ class ReleasePrCommandTest extends TestCase
     private const SHA = '841cc9a1b2c3d4e5f60718293a4b5c6d7e8f9012';
     private const COMMIT = 'c0ffee0000000000000000000000000000000000';
     private const LEASE = 'bead000000000000000000000000000000000000';
-    /** the commit message for prep(), in tag order */
+    /** the commit message for prep(), in tag order, before its trailers */
     private const DATE_MESSAGE = "Release 2026-11-14\n\nopen-telemetry/sdk 2.0.0\nopen-telemetry/api 1.11.0\n";
+    /** ReleaseDescription::breakingHash() of prep() */
+    private const HASH = 'dbe55436318fd0d3';
     private const MARKDOWN = "| Package | Latest | Suggested | Reason |\n|---|---|---|---|\n| opentelemetry-php/api | 1.10.1 | 1.11.0 | Added |\n\nTag in this order: open-telemetry/api\n";
 
     /** @var list<array{number: int, body: string, user?: string}> the open pull requests */
@@ -67,9 +70,15 @@ class ReleasePrCommandTest extends TestCase
     /** sha of otelbot/release on GitHub, null for no branch */
     private ?string $remote = null;
     private string $remoteParent = self::SHA;
+    /** @var list<string> the parents of $remote after the first, as of a merge */
+    private array $remoteOtherParents = [];
+    /** message of the commit at $remote */
+    private string $remoteMessage = '';
     private bool $sameTree = false;
     /** @var list<array{0: string, 1: string, 2: string, 3: string, 4: ?string}> arguments of each push */
     private array $pushes = [];
+    /** @var list<int> how many times release:prep had run, at each fetch */
+    private array $fetches = [];
     private CommandTester $tester;
     /** the --repository of the run */
     private string $repository = self::REPO;
@@ -94,7 +103,7 @@ class ReleasePrCommandTest extends TestCase
     {
         $this->assertSame(Command::SUCCESS, $this->run_command());
 
-        $this->assertSame([[self::DATE_MESSAGE, self::BOT, '356036745+otelbot-php[bot]@users.noreply.github.com']], $this->commits);
+        $this->assertSame([[self::DATE_MESSAGE . "\nBuilt-On: " . self::SHA . "\nBreaking-Changes: " . self::HASH . "\n", self::BOT, '356036745+otelbot-php[bot]@users.noreply.github.com']], $this->commits);
         $this->assertSame([[$this->root->url(), 'https://github.com/' . self::REPO . '.git', 'otelbot/release', '', 'app-token']], $this->pushes);
         $this->assertSame(['push', 'POST ' . self::API . '/pulls'], $this->events);
         $this->assertSame([
@@ -156,45 +165,102 @@ class ReleasePrCommandTest extends TestCase
         $this->assertNotNull($this->sent('POST', self::API . '/pulls'));
     }
 
+    public function test_the_commit_records_each_override(): void
+    {
+        $this->pulls = [['number' => 7, 'body' => self::body(['api=1.11.0', 'sdk=2.0.0'])]];
+
+        $this->run_command();
+
+        $this->assertEquals(new ReleaseBuild(self::SHA, self::HASH, new Overrides(['api=1.11.0', 'sdk=2.0.0'])), ReleaseBuild::fromMessage($this->commits[0][0]));
+    }
+
+    public function test_a_release_without_breaking_changes_records_no_hash(): void
+    {
+        $this->prep['packages'][1]['warnings'] = [];
+
+        $this->run_command();
+
+        $this->assertStringEndsWith("open-telemetry/api 1.11.0\n\nBuilt-On: " . self::SHA . "\n", $this->commits[0][0]);
+    }
+
     public function test_rebuild_only_without_a_pull_request_does_nothing(): void
     {
-        $this->assertSame(Command::SUCCESS, $this->run_command($this->rebuild('')));
+        $this->assertSame(Command::SUCCESS, $this->run_command(['--rebuild-only' => true]));
 
         $this->assertStringContainsString(self::REPO . ' has no open release pull request to rebuild', $this->tester->getDisplay());
         $this->assertSame([], $this->prepInputs);
     }
 
-    public function test_rebuild_only_with_the_same_overrides_does_nothing(): void
+    public function test_rebuild_only_with_the_overrides_it_was_built_with_does_nothing(): void
     {
-        $this->pulls = [['number' => 7, 'body' => "Edited text\n\n" . self::body(['api=1.11.0'])]];
+        $this->pulls = [['number' => 7, 'body' => "Edited text\n\n" . self::body(['  api=1.11.0'])]];
+        $this->built(['api=1.11.0']);
 
-        $this->assertSame(Command::SUCCESS, $this->run_command($this->rebuild(self::body(['  api=1.11.0']))));
+        $this->assertSame(Command::SUCCESS, $this->run_command(['--rebuild-only' => true]));
 
         $this->assertStringContainsString('The overrides are unchanged', $this->tester->getDisplay());
         $this->assertSame([], $this->prepInputs);
+        $this->assertSame([], $this->fetches);
     }
 
-    public function test_rebuild_only_with_changed_overrides_rebuilds(): void
+    /**
+     * Update branch in rebase mode keeps the message, and so the trailers, on another parent.
+     */
+    public function test_rebuild_only_on_a_rebased_branch_rebuilds(): void
     {
-        $this->pulls = [['number' => 7, 'body' => self::body(['api=1.12.0'])]];
+        $this->pulls = [['number' => 7, 'body' => self::body(['api=1.11.0'])]];
+        $this->built(['api=1.11.0']);
+        $this->remoteParent = 'rebased';
 
-        $this->assertSame(Command::SUCCESS, $this->run_command($this->rebuild(self::body(['api=1.11.0']))));
+        $this->assertSame(Command::SUCCESS, $this->run_command(['--rebuild-only' => true]));
 
         $this->assertCount(1, $this->prepInputs);
     }
 
-    public function test_rebuild_only_needs_the_previous_body(): void
+    public function test_rebuild_only_on_a_merge_rebuilds(): void
     {
-        $this->assertSame(Command::FAILURE, $this->run_command(['--rebuild-only' => true]));
+        $this->pulls = [['number' => 7, 'body' => self::body(['api=1.11.0'])]];
+        $this->built(['api=1.11.0']);
+        $this->remoteOtherParents = ['merged'];
 
-        $this->assertStringContainsString('--rebuild-only needs --previous-body-file', $this->tester->getDisplay());
+        $this->assertSame(Command::SUCCESS, $this->run_command(['--rebuild-only' => true]));
+
+        $this->assertCount(1, $this->prepInputs);
     }
 
-    public function test_a_previous_body_file_that_cannot_be_read_fails(): void
+    /**
+     * Another edit may have been queued behind this one and dropped, so the build is compared
+     * with the description as it is now, not as the event saw it.
+     */
+    public function test_rebuild_only_with_overrides_it_was_not_built_with_rebuilds(): void
     {
-        $this->assertSame(Command::FAILURE, $this->run_command(['--rebuild-only' => true, '--previous-body-file' => $this->root->url() . '/missing.md']));
+        $this->pulls = [['number' => 7, 'body' => self::body(['api=1.12.0'])]];
+        $this->built(['api=1.11.0']);
 
-        $this->assertStringContainsString('missing.md', $this->tester->getDisplay());
+        $this->assertSame(Command::SUCCESS, $this->run_command(['--rebuild-only' => true]));
+
+        $this->assertCount(1, $this->prepInputs);
+        $this->assertSame(['api=1.12.0'], $this->prepInputs[0]->getOption('set'));
+    }
+
+    public function test_rebuild_only_without_a_build_record_rebuilds(): void
+    {
+        $this->pulls = [['number' => 7, 'body' => self::body([])]];
+        $this->remote = self::LEASE;
+        $this->remoteMessage = "Merge branch 'main' into otelbot/release";
+
+        $this->assertSame(Command::SUCCESS, $this->run_command(['--rebuild-only' => true]));
+
+        $this->assertCount(1, $this->prepInputs);
+    }
+
+    public function test_rebuild_only_without_the_branch_rebuilds(): void
+    {
+        $this->pulls = [['number' => 7, 'body' => self::body([])]];
+
+        $this->assertSame(Command::SUCCESS, $this->run_command(['--rebuild-only' => true]));
+
+        $this->assertCount(1, $this->prepInputs);
     }
 
     public function test_a_sender_without_write_access_fails(): void
@@ -205,6 +271,7 @@ class ReleasePrCommandTest extends TestCase
 
         $this->assertStringContainsString('mallory has read access to ' . self::REPO . ', not write', $this->tester->getDisplay());
         $this->assertSame([], $this->prepInputs);
+        $this->assertSame([], $this->fetches);
         $this->assertSame(self::API . '/collaborators/mallory/permission', (string) $this->requests[1]->getUri());
     }
 
@@ -232,6 +299,7 @@ class ReleasePrCommandTest extends TestCase
 
         $this->assertStringContainsString('Each override must be <package>=<version|skip>. Not valid: api=banana, $(id)=skip', $this->tester->getDisplay());
         $this->assertSame([], $this->prepInputs);
+        $this->assertSame([], $this->fetches);
     }
 
     public function test_errors_are_annotated_under_github_actions(): void
@@ -260,6 +328,7 @@ class ReleasePrCommandTest extends TestCase
         $this->assertContains('DELETE ' . self::API . '/git/refs/heads/otelbot/release', $this->events);
         $this->assertSame([], $this->commits);
         $this->assertSame([], $this->pushes);
+        $this->assertSame([], $this->fetches);
     }
 
     public function test_nothing_to_release_without_a_pull_request_does_nothing(): void
@@ -270,6 +339,7 @@ class ReleasePrCommandTest extends TestCase
 
         $this->assertSame([], $this->events);
         $this->assertSame([], $this->commits);
+        $this->assertSame([], $this->fetches);
         $this->assertStringContainsString('Nothing to release from main at ' . self::SHA, $this->tester->getDisplay());
     }
 
@@ -293,6 +363,16 @@ class ReleasePrCommandTest extends TestCase
         $this->assertSame([], $this->events);
     }
 
+    /**
+     * A fetch of depth 2 makes the checkout shallow, which release:prep must not see.
+     */
+    public function test_the_branch_is_fetched_after_the_prep(): void
+    {
+        $this->assertSame(Command::SUCCESS, $this->run_command());
+
+        $this->assertSame([1], $this->fetches);
+    }
+
     public function test_the_lease_is_the_branch_as_fetched(): void
     {
         $this->remote = self::LEASE;
@@ -304,12 +384,23 @@ class ReleasePrCommandTest extends TestCase
 
     public function test_the_same_release_on_the_same_main_is_not_pushed(): void
     {
-        $this->remote = self::LEASE;
+        $this->built([]);
         $this->sameTree = true;
 
         $this->assertSame(Command::SUCCESS, $this->run_command());
 
         $this->assertSame([], $this->pushes);
+    }
+
+    public function test_the_same_content_with_other_overrides_is_pushed_to_record_them(): void
+    {
+        $this->pulls = [['number' => 7, 'body' => self::body(['api=1.11.0'])]];
+        $this->built([]);
+        $this->sameTree = true;
+
+        $this->assertSame(Command::SUCCESS, $this->run_command());
+
+        $this->assertCount(1, $this->pushes);
     }
 
     public function test_the_same_release_on_another_main_is_pushed(): void
@@ -444,14 +535,14 @@ class ReleasePrCommandTest extends TestCase
     }
 
     /**
-     * @return array<string, mixed>
+     * Put otelbot/release at a build of prep() on main, with $overrides.
+     *
+     * @param list<string> $overrides
      */
-    private function rebuild(string $previous): array
+    private function built(array $overrides): void
     {
-        $file = $this->root->url() . '/previous.md';
-        file_put_contents($file, $previous);
-
-        return ['--rebuild-only' => true, '--previous-body-file' => $file];
+        $this->remote = self::LEASE;
+        $this->remoteMessage = self::DATE_MESSAGE . "\n" . (new ReleaseBuild(self::SHA, self::HASH, new Overrides($overrides)))->trailers();
     }
 
     /**
@@ -530,6 +621,11 @@ class ReleasePrCommandTest extends TestCase
                 'title' => $this->currentTitle,
                 'body' => $this->current ?? $this->pulls[0]['body'],
             ])),
+            $method === 'GET' && str_ends_with($url, '/commits/' . self::LEASE) => new Response(200, [], json_encode([
+                'sha' => self::LEASE,
+                'commit' => ['message' => $this->remoteMessage],
+                'parents' => array_map(static fn (string $sha): array => ['sha' => $sha], [$this->remoteParent, ...$this->remoteOtherParents]),
+            ])),
             $method === 'GET' && str_ends_with($url, '/git/ref/heads/main') => new Response(200, [], json_encode(['ref' => 'refs/heads/main', 'object' => ['sha' => $this->main]])),
             $method === 'GET' && str_contains($url, '/collaborators/') =>new Response(200, [], json_encode(['permission' => $this->permission])),
             $method === 'PATCH' => new Response(200, [], json_encode(['head' => ['ref' => 'otelbot/release', 'repo' => ['full_name' => $this->repository]]])),
@@ -567,7 +663,7 @@ class ReleasePrCommandTest extends TestCase
      */
     private function run_command(array $input = []): int
     {
-        $this->requests = $this->events = $this->prepInputs = $this->commits = $this->pushes = [];
+        $this->requests = $this->events = $this->prepInputs = $this->commits = $this->pushes = $this->fetches = [];
         $input += ['--path' => $this->root->url(), '--repository' => self::REPO, '--token' => 'app-token', '--date' => self::DATE];
         $input = array_filter($input, static fn (mixed $value): bool => $value !== null);
         $this->repository = $input['--repository'];
@@ -581,7 +677,12 @@ class ReleasePrCommandTest extends TestCase
 
             return self::COMMIT;
         });
-        $git->method('fetch')->willReturnCallback(fn (): ?string => $this->remote);
+        $git->method('fetch')->willReturnCallback(function (): ?string {
+            $this->fetches[] = count($this->prepInputs);
+
+            return $this->remote;
+        });
+        $git->method('message')->willReturnCallback(fn (): string => rtrim($this->remoteMessage, "\n"));
         $git->method('parent')->willReturnCallback(fn (string $path, string $sha): ?string => $sha === self::LEASE ? $this->remoteParent : null);
         $git->method('sameTree')->willReturnCallback(fn (string $path, string $a, string $b): bool => [$a, $b] === [self::LEASE, self::COMMIT] && $this->sameTree);
         $git->method('push')->willReturnCallback(function (string ...$args): void {

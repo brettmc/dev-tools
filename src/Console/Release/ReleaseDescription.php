@@ -8,9 +8,11 @@ namespace OpenTelemetry\DevTools\Console\Release;
  * The description of a monorepo's release pull request, built from `release:prep`, and the
  * markers in it that workflows read.
  *
- * The approval check, core's `release-approval.yml`, fails while the description has the APPROVAL
- * line. A tick is kept across rebuilds while the warnings it was given for are the same, which the
- * `<!-- breaking: <hash> -->` line under it records.
+ * The approval check, core's `release-approval.yml`, takes the hash from the commit's
+ * {@see ReleaseBuild} trailers and repeats {@see approved()} in bash, with the same TICKED pattern.
+ * Nothing tests that the two agree, so change them together. A tick is kept across rebuilds while
+ * the warnings it was given for are the same, which the `<!-- breaking: <hash> -->` line under it
+ * records.
  */
 final class ReleaseDescription
 {
@@ -79,13 +81,10 @@ final class ReleaseDescription
         $body .= self::INTRO;
         $body .= $markdown;
 
-        $checks = self::checks($prep);
-        if ($checks['warnings'] !== [] || $checks['constraints'] !== []) {
-            $hash = self::hash($checks);
-            $marker = "<!-- breaking: {$hash} -->";
-            $lines = self::lines($previous);
-            $box = preg_grep(self::TICKED, $lines) !== [] && in_array($marker, $lines, true) ? self::APPROVED : self::APPROVAL;
-            $body .= self::BREAKING . "{$box}\n{$marker}\n";
+        $hash = self::breakingHash($prep);
+        if ($hash !== null) {
+            $box = self::approved($previous, $hash) ? self::APPROVED : self::APPROVAL;
+            $body .= self::BREAKING . "{$box}\n" . self::marker($hash) . "\n";
         }
 
         $body .= self::CHANGE;
@@ -93,6 +92,29 @@ final class ReleaseDescription
         $body .= Overrides::FENCE . "\n" . implode('', array_map(static fn (string $line): string => "{$line}\n", $overrides->lines)) . "```\n";
 
         return $body . self::MERGE;
+    }
+
+    /**
+     * The hash of what a tick is given for, or null when release:prep gave no warnings and no box
+     * is needed.
+     *
+     * @param array<mixed> $prep the decoded output of `release:prep --format=json`
+     */
+    public static function breakingHash(array $prep): ?string
+    {
+        $checks = self::checks($prep);
+
+        return $checks['warnings'] === [] && $checks['constraints'] === [] ? null : self::hash($checks);
+    }
+
+    /**
+     * Whether $body has a ticked box and the marker for $hash, each as a whole line.
+     */
+    public static function approved(string $body, string $hash): bool
+    {
+        $lines = self::lines($body);
+
+        return preg_grep(self::TICKED, $lines) !== [] && in_array(self::marker($hash), $lines, true);
     }
 
     /**
@@ -150,6 +172,11 @@ final class ReleaseDescription
         $json = json_encode($checks, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
 
         return substr(hash('sha256', "{$json}\n"), 0, 16);
+    }
+
+    private static function marker(string $hash): string
+    {
+        return "<!-- breaking: {$hash} -->";
     }
 
     /**

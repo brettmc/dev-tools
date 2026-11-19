@@ -528,6 +528,13 @@ class GitHubTest extends TestCase
         $this->assertSame(['p1', 'p2'], $this->github->parents('o/r', 'abc'));
     }
 
+    public function test_summary_of_a_commit(): void
+    {
+        $this->respond(self::API . '/commits/abc', ['sha' => 'abc', 'commit' => ['message' => "Title\n\nBuilt-On: p1"], 'parents' => [['sha' => 'p1']]]);
+
+        $this->assertSame(['message' => "Title\n\nBuilt-On: p1", 'parents' => ['p1']], $this->github->commitSummary('o/r', 'abc'));
+    }
+
     /**
      * @param array<string, string> $headers
      */

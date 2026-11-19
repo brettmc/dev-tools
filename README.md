@@ -466,10 +466,11 @@ an error.
    per override. It prepares the changelogs, and its `markdown` report goes in the description.
 3. Closes the pull request and deletes its branch when there is nothing to release.
 4. Commits the changes as `otelbot-php[bot]`, as `Release <date>` with one line per package in tag
-   order.
+   order, and the trailers below.
 5. Writes the description, and updates it if the pull request is open.
 6. Pushes to `otelbot/release`, with a lease on the branch as fetched. A push that would change
-   nothing is skipped: the branch is built on the same commit of main and has the same content.
+   nothing is skipped: the branch is built on the same commit of main, with the same content and
+   the same trailers.
 7. Opens the pull request, if none was open.
 
 The checkout at `--path` is changed and committed, so use a fresh one. The date defaults to today in
@@ -487,6 +488,28 @@ unchanged.
 If main moved while the command ran, the new description starts with the stale note, as
 [release:pr:stale](#mark-the-pull-request-stale) may have run for that push and seen the old build.
 
+### Record the build in the commit
+
+The commit message ends with trailers that record what the commit was built from:
+
+```text
+Release 2026-11-14
+
+open-telemetry/sdk 2.0.0
+open-telemetry/api 1.11.0
+
+Built-On: 841cc9a1b2c3d4e5f60718293a4b5c6d7e8f9012
+Breaking-Changes: 646ae93db4df7370
+Override: sdk=2.0.0
+```
+
+`Built-On` is the commit of main. `Breaking-Changes` is the hash of the warnings, and is left out
+when there are none. There is one `Override` per line of the overrides block.
+
+Workflows read these rather than the description, as anyone with write access can edit it, and a
+queued run's copy of it is out of date. A rebase or Update branch keeps the message but not the
+parent, so `Built-On` then names a commit that is not the parent.
+
 ### Change a version with the overrides block
 
 The description ends with a block of overrides, one `<package>=<version|skip>` per line. The package
@@ -503,14 +526,17 @@ open-telemetry/exporter-zipkin=skip
 The description is untrusted text, so each line must match a strict pattern before it is used, and
 it is passed as an argument, never through a shell. An invalid line fails the run and is named.
 
-A workflow that runs on edits to the description passes `--rebuild-only`, with the description
-before the edit in `--previous-body-file`. The command then does nothing unless the pull request is
-open and its overrides changed. Pass `--sender` with the login of the user who made the edit or
-asked for the rebuild. They need write or admin access to the monorepo.
+A workflow that runs on edits to the description passes `--rebuild-only`. The command then does
+nothing unless the pull request is open and its head commit was not built with the overrides in its
+description. It reads the description when it runs, not as the edit left it, so a run that was
+queued behind another edit still builds the latest overrides. A head without trailers, or whose
+parent is not the commit `Built-On` names, as after a rebase or a merge, is rebuilt. Pass `--sender`
+with the login of the user who made the edit or asked for the rebuild. They need write or admin
+access to the monorepo.
 
 ```shell
 vendor/bin/otel release:pr --repository=open-telemetry/opentelemetry-php \
-  --rebuild-only --previous-body-file=before.md --sender="$SENDER"
+  --rebuild-only --sender="$SENDER"
 ```
 
 ### Approve breaking changes
@@ -523,12 +549,16 @@ between packages breaks, the description asks for a tick:
 <!-- breaking: 646ae93db4df7370 -->
 ```
 
-Core's `release-approval.yml` fails while the description holds the unticked line, exactly as above.
-That line is a contract: change it here and there together.
+The marker is a hash of the warnings, the same as the `Breaking-Changes` trailer. A rebuild keeps
+the tick while the hash is the same, and clears it when the warnings change. A tick typed by hand
+counts too, such as `* [X]` or extra spaces, as GitHub renders those as ticked.
 
-The marker is a hash of the warnings. A rebuild keeps the tick while the hash is the same, and
-clears it when the warnings change. A tick typed by hand counts too, such as `* [X]` or extra
-spaces, as GitHub renders those as ticked.
+Core's `release-approval.yml` reads the head commit, not the description. It fails unless the
+commit's only parent is the tip of main and its `Built-On` trailer names that commit, so a merge, a
+rebase or a commit without trailers fails. When the commit has a `Breaking-Changes` trailer, the
+description also needs a ticked box and the marker for that hash, each as a whole line. Deleting the
+box or the marker approves nothing. The box line and the marker are a contract: change them here
+and there together.
 
 ### Mark the pull request stale
 
