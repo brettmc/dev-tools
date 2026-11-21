@@ -69,6 +69,7 @@ PECL.
 | `release:prep` | Suggests each package's next version and prepares the changelogs, branch aliases and `replace` for tagging | Optional |
 | `release:pr` | Opens or rebuilds the release pull request, from `release:prep` on main | Required |
 | `release:pr:stale` | Marks the release pull request stale once main has moved past it | Required |
+| `release:pr:check` | Checks that the release pull request may be merged, as a required check | Required |
 | `release:run` | Tags and releases the split repositories | Required |
 | `update:branch-alias` | Moves each package's `dev-main` alias to its latest release | Optional |
 | `packages:spi:check` | Checks `#[PackageDependency]` constraints against the monorepo | Not used |
@@ -455,7 +456,9 @@ starts again from main and replaces the branch, so the pull request never confli
 `release:pr:stale` marks the pull request once main has moved past the commit it was built on.
 Nothing rebuilds the pull request when main moves.
 
-Both commands work on the release pull request of core or contrib, named with `--repository`.
+`release:pr:check` fails while the pull request is not ready to merge, for a required check.
+
+The commands work on the release pull request of core or contrib, named with `--repository`.
 Only pull requests opened by `otelbot-php[bot]` from `otelbot/release` count. More than one open is
 an error.
 
@@ -555,12 +558,30 @@ The marker is a hash of the warnings, the same as the `Breaking-Changes` trailer
 the tick while the hash is the same, and clears it when the warnings change. A tick typed by hand
 counts too, such as `* [X]` or extra spaces, as GitHub renders those as ticked.
 
-Core's `release-approval.yml` reads the head commit, not the description. It fails unless the
-commit's only parent is the tip of main and its `Built-On` trailer names that commit, so a merge, a
-rebase or a commit without trailers fails. When the commit has a `Breaking-Changes` trailer, the
-description also needs a ticked box and the marker for that hash, each as a whole line. Deleting the
-box or the marker approves nothing. The box line and the marker are a contract: change them here
-and there together.
+`release:pr:check` requires the tick. Deleting the box or the marker approves nothing.
+
+### Check the pull request before merge
+
+`release:pr:check` takes the pull request's number and its head commit, as the event gives them.
+It reads the head commit's trailers and the description as it is when the check runs. A re-run of a
+workflow repeats the event, so the event's copy of the description may be out of date. It fails,
+naming each problem, when:
+
+- the head commit has no trailers, or malformed ones.
+- the commit's only parent is not the tip of main, or `Built-On` doesn't name it. A merge of main,
+  a rebase and a release built before main moved all fail.
+- the overrides block in the description is not the `Override` trailers, compared as `release:pr`
+  reads the block. An edit whose rebuild is queued or failed fails until a rebuild succeeds.
+- there is a `Breaking-Changes` trailer, and the description has no ticked box with the marker for
+  that hash.
+
+```shell
+vendor/bin/otel release:pr:check --repository=open-telemetry/opentelemetry-php \
+  --number="$NUMBER" --head="$HEAD_SHA"
+```
+
+The check edits nothing, so a token that can read the pull request is enough. Run it on edits to
+the description as well as on pushes, so a tick or an override edit is judged again.
 
 ### Mark the pull request stale
 
@@ -580,14 +601,16 @@ pull request was listed, such as by a rebuild, it is left alone.
 
 ### Tokens and permissions
 
-Both commands take the token in `GITHUB_TOKEN` or `--token`. It authors the pull request, the
-commit push and the edits, so use a GitHub App installation token where edits must start
-workflows. Edits made with a workflow's own `GITHUB_TOKEN` start none.
+The commands take the token in `GITHUB_TOKEN` or `--token`. For `release:pr` and
+`release:pr:stale` it authors the pull request, the commit push and the edits, so use a GitHub App
+installation token where edits must start workflows. Edits made with a workflow's own
+`GITHUB_TOKEN` start none. `release:pr:check` only reads, so a workflow's own `GITHUB_TOKEN` will do.
 
 | Command | Permissions on the monorepo |
 |---|---|
 | `release:pr` | Contents: write, Pull requests: write |
 | `release:pr:stale` | Contents: read, Pull requests: write |
+| `release:pr:check` | Contents: read, Pull requests: read |
 
 The same token goes to `release:prep`, which reads the latest release of each split repository. Those
 reads are public. The push sends the token in a header, never in the URL, so it does not appear in

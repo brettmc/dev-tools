@@ -8,11 +8,9 @@ namespace OpenTelemetry\DevTools\Console\Release;
  * The description of a monorepo's release pull request, built from `release:prep`, and the
  * markers in it that workflows read.
  *
- * The approval check, core's `release-approval.yml`, takes the hash from the commit's
- * {@see ReleaseBuild} trailers and repeats {@see approved()} in bash, with the same TICKED pattern.
- * Nothing tests that the two agree, so change them together. A tick is kept across rebuilds while
- * the warnings it was given for are the same, which the `<!-- breaking: <hash> -->` line under it
- * records.
+ * `release:pr:check` takes the hash from the commit's {@see ReleaseBuild} trailers and requires
+ * {@see approved()}. A tick is kept across rebuilds while the warnings it was given for are the
+ * same, which the `<!-- breaking: <hash> -->` line under it records.
  */
 final class ReleaseDescription
 {

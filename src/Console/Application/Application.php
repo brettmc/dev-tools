@@ -14,6 +14,7 @@ use OpenTelemetry\DevTools\Console\Command\Release\PeclCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\PeclTagCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleaseListCommand;
+use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrCheckCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrepCommand;
 use OpenTelemetry\DevTools\Console\Command\Release\ReleasePrStaleCommand;
@@ -42,6 +43,7 @@ class Application extends BaseApplication
             new ReleasePrepCommand(),
             new ReleasePrCommand(),
             new ReleasePrStaleCommand(),
+            new ReleasePrCheckCommand(),
             new SpiCheckCommand(),
             new ChangelogCheckCommand(),
             new PhpSupportCommand(),
